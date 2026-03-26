@@ -1,0 +1,18 @@
+[project]
+name = "remediation-agent-lambda"
+version = "0.1.0"
+description = "AI remediation agent - 3-agent pipeline (Summarization, Classification, Remediation)"
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=0.86.0",
+    "boto3>=1.42.76",
+    "pydantic>=2.12.5",
+    "pyyaml>=6.0.3",
+]
+
+[dependency-groups]
+dev = [
+    "boto3-stubs>=1.42.76",
+    "mypy>=1.19.1",
+    "ruff>=0.15.7",
+]

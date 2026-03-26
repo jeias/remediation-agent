@@ -44,3 +44,9 @@ variable "app_image_tag" {
   type        = string
   default     = "latest"
 }
+
+variable "ses_sender_email" {
+  description = "Verified SES sender email for the agent"
+  type        = string
+  default     = "agent@company.com"
+}

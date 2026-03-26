@@ -67,3 +67,14 @@ output "app_log_group_name" {
   description = "CloudWatch log group for the app (AI agent reads this)"
   value       = aws_cloudwatch_log_group.app.name
 }
+
+output "lambda_function_name" {
+  description = "Lambda function name for the remediation agent"
+  value       = aws_lambda_function.agent.function_name
+}
+
+output "lambda_function_arn" {
+  description = "Lambda function ARN"
+  value       = aws_lambda_function.agent.arn
+}
+
