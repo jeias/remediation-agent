@@ -18,7 +18,7 @@ aws ecr get-login-password --region "$AWS_REGION" --profile "$AWS_PROFILE" | \
   docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
 # Build and push
-IMAGE_TAG="${1:-latest}"
+IMAGE_TAG="${1:-$(git rev-parse --short HEAD)}"
 echo "Building image with tag: $IMAGE_TAG"
 docker build --platform linux/amd64 -t "$ECR_REPO:$IMAGE_TAG" "$(dirname "$0")/../app"
 docker push "$ECR_REPO:$IMAGE_TAG"

@@ -13,6 +13,14 @@ CONFIDENCE_THRESHOLD = 0.8
 MAX_TOOL_CALLS = 5
 MAX_LOG_LINES = 50
 
+# --- GitHub (for code diff analysis) ---
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "jeias/remediation-agent")
+GITHUB_TOKEN_SECRET_ARN = os.environ.get("GITHUB_TOKEN_SECRET_ARN", "")
+TASK_FAMILY = os.environ.get("TASK_FAMILY", "remediation-agent-app")
+
+# --- Verification ---
+VERIFICATION_WAIT_SECONDS = int(os.environ.get("VERIFICATION_WAIT_SECONDS", "120"))
+
 # --- Operational ---
 DRY_RUN = os.environ.get("DRY_RUN", "true").lower() == "true"
 ANTHROPIC_SECRET_ARN = os.environ.get("ANTHROPIC_SECRET_ARN", "remediation-agent/anthropic-api-key")

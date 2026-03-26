@@ -2,7 +2,7 @@
 
 resource "aws_sqs_queue" "agent" {
   name                       = "${var.project_name}-queue"
-  visibility_timeout_seconds = 360
+  visibility_timeout_seconds = 720
   message_retention_seconds  = 345600
   receive_wait_time_seconds  = 20
 

@@ -1,4 +1,4 @@
-from pipeline.config import CLUSTER_NAME, SERVICE_NAME, LOG_GROUP_NAME, SES_TEAM_RECIPIENT, SES_OPS_RECIPIENT
+from pipeline.config import CLUSTER_NAME, SERVICE_NAME, LOG_GROUP_NAME, SES_TEAM_RECIPIENT, SES_OPS_RECIPIENT, TASK_FAMILY
 
 TOOL_FETCH_LOGS = {
     "name": "fetch_cloudwatch_logs",
@@ -90,7 +90,46 @@ TOOL_SEND_EMAIL = {
     },
 }
 
+TOOL_GET_TASK_DEF = {
+    "name": "get_task_definition",
+    "description": "Get details of a specific ECS task definition revision, including the container image URI and tag (git SHA). Use this to find what code a specific revision is running.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "task_family": {
+                "type": "string",
+                "enum": [TASK_FAMILY],
+                "description": "The task definition family name",
+            },
+            "revision": {
+                "type": "integer",
+                "description": "Task definition revision number",
+            },
+        },
+        "required": ["task_family", "revision"],
+    },
+}
+
+TOOL_COMPARE_COMMITS = {
+    "name": "compare_git_commits",
+    "description": "Compare two git commits and return the code changes (commit messages, changed files, diffs). Use this to understand what code changed between deployments.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "base_sha": {
+                "type": "string",
+                "description": "Git SHA of the previous (base) commit",
+            },
+            "head_sha": {
+                "type": "string",
+                "description": "Git SHA of the current (head) commit",
+            },
+        },
+        "required": ["base_sha", "head_sha"],
+    },
+}
+
 # Tool sets per agent (least-privilege)
 SUMMARIZATION_TOOLS = [TOOL_FETCH_LOGS]
-CLASSIFICATION_TOOLS = [TOOL_FETCH_LOGS, TOOL_DESCRIBE_ECS]
-REMEDIATION_TOOLS = [TOOL_ROLLBACK_ECS, TOOL_SEND_EMAIL]
+CLASSIFICATION_TOOLS = [TOOL_FETCH_LOGS, TOOL_DESCRIBE_ECS, TOOL_GET_TASK_DEF, TOOL_COMPARE_COMMITS]
+REMEDIATION_TOOLS = [TOOL_ROLLBACK_ECS, TOOL_SEND_EMAIL, TOOL_FETCH_LOGS]

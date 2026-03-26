@@ -5,6 +5,13 @@ resource "aws_secretsmanager_secret" "anthropic_api_key" {
   recovery_window_in_days = 0
 }
 
+# --- Secrets Manager for GitHub Token ---
+
+resource "aws_secretsmanager_secret" "github_token" {
+  name                    = "${var.project_name}/github-token"
+  recovery_window_in_days = 0
+}
+
 # --- CloudWatch Log Group for Lambda ---
 
 resource "aws_cloudwatch_log_group" "lambda" {
@@ -80,7 +87,10 @@ data "aws_iam_policy_document" "lambda_permissions" {
   statement {
     sid       = "ReadAnthropicSecret"
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = [aws_secretsmanager_secret.anthropic_api_key.arn]
+    resources = [
+      aws_secretsmanager_secret.anthropic_api_key.arn,
+      aws_secretsmanager_secret.github_token.arn,
+    ]
   }
 
   # SQS - receive and delete messages
@@ -110,7 +120,7 @@ resource "aws_lambda_function" "agent" {
   runtime       = "python3.13"
   handler       = "pipeline.main.handler"
   filename      = "${path.module}/placeholder.zip"
-  timeout       = 300
+  timeout       = 900
   memory_size   = 512
 
   environment {
@@ -123,6 +133,10 @@ resource "aws_lambda_function" "agent" {
       SES_SENDER           = var.ses_sender_email
       SES_TEAM_RECIPIENT   = var.ses_sender_email
       SES_OPS_RECIPIENT    = var.ses_sender_email
+      VERIFICATION_WAIT_SECONDS = "120"
+      GITHUB_REPO              = "jeias/remediation-agent"
+      GITHUB_TOKEN_SECRET_ARN  = aws_secretsmanager_secret.github_token.arn
+      TASK_FAMILY              = aws_ecs_task_definition.app.family
     }
   }
 

@@ -26,4 +26,5 @@ class ClassificationOutput(BaseModel):
 class RemediationOutput(BaseModel):
     action_taken: Literal["rollback", "escalated", "notify_only"]
     confidence_accepted: bool
+    verified: bool | None = Field(default=None, description="Whether the rollback was verified successful. Null if no rollback was performed.")
     details: str

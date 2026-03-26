@@ -1,9 +1,15 @@
 import json
+import time
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone, timedelta
 
 import boto3
 
-from pipeline.config import DRY_RUN, MAX_LOG_LINES, SES_SENDER
+from pipeline.config import (
+    DRY_RUN, MAX_LOG_LINES, SES_SENDER, VERIFICATION_WAIT_SECONDS,
+    GITHUB_REPO, GITHUB_TOKEN_SECRET_ARN,
+)
 
 logs_client = boto3.client("logs")
 ecs_client = boto3.client("ecs")
@@ -76,8 +82,12 @@ def rollback_ecs_service(cluster_name: str, service_name: str) -> str:
     if DRY_RUN:
         return json.dumps({
             "dry_run": True,
+            "success": True,
+            "rolled_back_from": current_revision,
+            "rolled_back_to": previous_revision,
+            "deployment_stable": True,
+            "wait_seconds": 0,
             "message": f"Would rollback from revision {current_revision} to {previous_revision}",
-            "previous_task_definition": previous_task_def,
         })
 
     ecs_client.update_service(
@@ -85,12 +95,40 @@ def rollback_ecs_service(cluster_name: str, service_name: str) -> str:
         service=service_name,
         taskDefinition=previous_task_def,
     )
-    return json.dumps({
+
+    # Poll until deployment is stable or timeout
+    start = time.monotonic()
+    deployment_stable = False
+
+    while (time.monotonic() - start) < VERIFICATION_WAIT_SECONDS:
+        time.sleep(10)
+        resp = ecs_client.describe_services(cluster=cluster_name, services=[service_name])
+        svc = resp["services"][0]
+        deployments = svc.get("deployments", [])
+        primary = next((d for d in deployments if d["status"] == "PRIMARY"), None)
+
+        if (
+            primary
+            and primary["taskDefinition"] == previous_task_def
+            and primary["runningCount"] == svc.get("desiredCount", 1)
+            and len(deployments) == 1
+        ):
+            deployment_stable = True
+            break
+
+    wait_seconds = int(time.monotonic() - start)
+
+    result = {
         "success": True,
         "rolled_back_from": current_revision,
         "rolled_back_to": previous_revision,
-        "previous_task_definition": previous_task_def,
-    })
+        "deployment_stable": deployment_stable,
+        "wait_seconds": wait_seconds,
+    }
+    if not deployment_stable:
+        result["message"] = f"Deployment in progress but not yet stable after {wait_seconds}s"
+
+    return json.dumps(result)
 
 
 def send_email(to: str, subject: str, body: str, severity: str) -> str:
@@ -113,6 +151,89 @@ def send_email(to: str, subject: str, body: str, severity: str) -> str:
     return json.dumps({"success": True, "sent_to": to, "subject": subject})
 
 
+def get_task_definition(task_family: str, revision: int) -> str:
+    td_id = f"{task_family}:{revision}"
+    response = ecs_client.describe_task_definition(taskDefinition=td_id)
+    td = response["taskDefinition"]
+    container = td["containerDefinitions"][0]
+
+    image = container.get("image", "")
+    tag = image.split(":")[-1] if ":" in image else "unknown"
+
+    result = {
+        "task_family": td["family"],
+        "revision": td["revision"],
+        "image": image,
+        "tag": tag,
+        "environment": {
+            e["name"]: e["value"]
+            for e in container.get("environment", [])
+        },
+    }
+    return json.dumps(result, indent=2)
+
+
+# --- GitHub Integration ---
+
+_github_token = None
+
+
+def _get_github_token() -> str | None:
+    global _github_token
+    if _github_token is None and GITHUB_TOKEN_SECRET_ARN:
+        sm = boto3.client("secretsmanager")
+        secret = sm.get_secret_value(SecretId=GITHUB_TOKEN_SECRET_ARN)
+        _github_token = secret["SecretString"]
+    return _github_token
+
+
+def compare_git_commits(base_sha: str, head_sha: str) -> str:
+    if base_sha == head_sha:
+        return json.dumps({"message": "Same commit SHA — no code changes"})
+
+    token = _get_github_token()
+    if not token:
+        return json.dumps({"error": "GitHub token not configured. Cannot compare commits."})
+
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/compare/{base_sha}...{head_sha}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "remediation-agent",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        return json.dumps({"error": f"GitHub API error: {e.code}", "detail": e.read().decode()[:200]})
+    except Exception as e:
+        return json.dumps({"error": f"GitHub API unavailable: {type(e).__name__}: {e}"})
+
+    result = {
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "total_commits": len(data.get("commits", [])),
+        "commits": [
+            {"sha": c["sha"][:7], "message": c["commit"]["message"][:200]}
+            for c in data.get("commits", [])[:5]
+        ],
+        "changed_files": [
+            {
+                "filename": f["filename"],
+                "additions": f["additions"],
+                "deletions": f["deletions"],
+                "patch": f.get("patch", "")[:500],
+            }
+            for f in data.get("files", [])[:10]
+        ],
+    }
+    return json.dumps(result, indent=2)
+
+
 # --- Tool Dispatcher ---
 
 TOOL_EXECUTORS = {
@@ -120,6 +241,8 @@ TOOL_EXECUTORS = {
     "describe_ecs_service": lambda args: describe_ecs_service(**args),
     "rollback_ecs_service": lambda args: rollback_ecs_service(**args),
     "send_email": lambda args: send_email(**args),
+    "get_task_definition": lambda args: get_task_definition(**args),
+    "compare_git_commits": lambda args: compare_git_commits(**args),
 }
 
 

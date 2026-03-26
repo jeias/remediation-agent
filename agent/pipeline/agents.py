@@ -172,6 +172,7 @@ def run_classification(client: Anthropic, summary: SummarizationOutput, trace_lo
         output_schema=ClassificationOutput,
         agent_name="classification",
         trace_logger=trace_logger,
+        max_tool_calls=8,
     )
 
 
@@ -191,7 +192,7 @@ def run_remediation(
                 f"Original error summary:\n{summary.model_dump_json(indent=2)}\n\n"
                 f"The confidence threshold for automated rollback is {CONFIDENCE_THRESHOLD}.\n\n"
                 f"Review the classification, decide whether to execute the recommended action, "
-                f"and compose a notification email. Use your tools to act."
+                f"verify the result if you rollback, and compose a notification email. Use your tools to act."
             ),
         }
     ]
@@ -205,4 +206,5 @@ def run_remediation(
         output_schema=RemediationOutput,
         agent_name="remediation",
         trace_logger=trace_logger,
+        max_tool_calls=8,
     )
