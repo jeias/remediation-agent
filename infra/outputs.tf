@@ -78,3 +78,18 @@ output "lambda_function_arn" {
   value       = aws_lambda_function.agent.arn
 }
 
+output "sqs_queue_url" {
+  description = "SQS queue URL for alarm events"
+  value       = aws_sqs_queue.agent.url
+}
+
+output "sqs_queue_arn" {
+  description = "SQS queue ARN"
+  value       = aws_sqs_queue.agent.arn
+}
+
+output "sqs_dlq_url" {
+  description = "SQS dead letter queue URL"
+  value       = aws_sqs_queue.agent_dlq.url
+}
+

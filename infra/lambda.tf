@@ -82,6 +82,17 @@ data "aws_iam_policy_document" "lambda_permissions" {
     actions   = ["secretsmanager:GetSecretValue"]
     resources = [aws_secretsmanager_secret.anthropic_api_key.arn]
   }
+
+  # SQS - receive and delete messages
+  statement {
+    sid = "SQSReceive"
+    actions = [
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes",
+    ]
+    resources = [aws_sqs_queue.agent.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "lambda" {
@@ -104,7 +115,7 @@ resource "aws_lambda_function" "agent" {
 
   environment {
     variables = {
-      DRY_RUN              = "true"
+      DRY_RUN              = "false"
       CLUSTER_NAME         = aws_ecs_cluster.main.name
       SERVICE_NAME         = aws_ecs_service.app.name
       LOG_GROUP            = aws_cloudwatch_log_group.app.name
@@ -122,5 +133,19 @@ resource "aws_lambda_function" "agent" {
 
   lifecycle {
     ignore_changes = [filename, source_code_hash]
+  }
+}
+
+# --- SQS → Lambda Event Source Mapping ---
+
+resource "aws_lambda_event_source_mapping" "sqs_to_lambda" {
+  event_source_arn                   = aws_sqs_queue.agent.arn
+  function_name                      = aws_lambda_function.agent.arn
+  batch_size                         = 1
+  maximum_batching_window_in_seconds = 0
+  enabled                            = true
+
+  scaling_config {
+    maximum_concurrency = 2
   }
 }
