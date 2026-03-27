@@ -129,9 +129,9 @@ def list_items():
         conn = get_db_connection()
         with conn.cursor() as cur:
             # BROKEN DEPLOY: uncomment the line below to simulate a bad deployment
-            # (code expects a column from a migration that was never applied) test2
-            # cur.execute("SELECT id, name, description, created_at FROM items ORDER BY created_at DESC")
-            cur.execute("SELECT id, name, created_at FROM items ORDER BY created_at DESC")
+            # (code expects a column from a migration that was never applied) test3
+            cur.execute("SELECT id, name, description, created_at FROM items ORDER BY created_at DESC")
+            # cur.execute("SELECT id, name, created_at FROM items ORDER BY created_at DESC")
             rows = cur.fetchall()
         conn.close()
         return [
