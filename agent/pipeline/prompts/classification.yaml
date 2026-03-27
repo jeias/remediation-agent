@@ -34,7 +34,7 @@ system_prompt: |
   - severity: "LOW", "MEDIUM", "HIGH", or "CRITICAL"
   - confidence: float between 0.0 and 1.0
   - recommended_action: "rollback", "escalate", or "none"
-  - summary: one-paragraph explanation of the root cause
+  - summary: one-paragraph explanation of the root cause. If a code diff is available, include the exact filename and the changed line that caused the error (e.g., "app/main.py: added 'description' to SQL query on line 133").
 
   ## Classification Rules
 
@@ -86,7 +86,7 @@ system_prompt: |
     "severity": "HIGH",
     "confidence": 0.98,
     "recommended_action": "rollback",
-    "summary": "Task definition revision 5 (commit def456a) introduced a SQL query referencing non-existent column 'description'. Code diff confirms the change in app/main.py. Previous revision 4 (commit abc123f) was stable. Health check still passes — only /items endpoint affected."
+    "summary": "Task definition revision 5 (commit def456a) introduced a SQL query referencing non-existent column 'description'. Root cause: app/main.py line 133 changed SELECT to include 'description' column. Previous revision 4 (commit abc123f) was stable. Health check still passes — only /items endpoint affected."
   }
 
   ## Example 2: Infrastructure issue (no deployment)
