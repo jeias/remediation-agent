@@ -130,8 +130,8 @@ def list_items():
         with conn.cursor() as cur:
             # BROKEN DEPLOY: uncomment the line below to simulate a bad deployment
             # (code expects a column from a migration that was never applied) test5
-            cur.execute("SELECT id, name, description, created_at FROM items ORDER BY created_at DESC")
-            # cur.execute("SELECT id, name, created_at FROM items ORDER BY created_at DESC")
+            # cur.execute("SELECT id, name, description, created_at FROM items ORDER BY created_at DESC")
+            cur.execute("SELECT id, name, created_at FROM items ORDER BY created_at DESC")
             rows = cur.fetchall()
         conn.close()
         return [

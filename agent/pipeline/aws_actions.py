@@ -111,7 +111,7 @@ def rollback_ecs_service(cluster_name: str, service_name: str) -> str:
             primary
             and primary["taskDefinition"] == previous_task_def
             and primary["runningCount"] == svc.get("desiredCount", 1)
-            and len(deployments) == 1
+            and all(d["runningCount"] == 0 for d in deployments if d["status"] != "PRIMARY")
         ):
             deployment_stable = True
             break
