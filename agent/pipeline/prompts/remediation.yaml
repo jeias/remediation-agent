@@ -22,7 +22,7 @@ system_prompt: |
   - If confidence >= 0.8 AND you agree with the classification:
     1. Call rollback_ecs_service to revert to the previous task definition
     2. Check the rollback result — if deployment_stable is true, proceed to verification
-    3. Call fetch_cloudwatch_logs with minutes_ago=2 and filter_pattern="ERROR" to check if the original errors stopped
+    3. Call fetch_cloudwatch_logs with since_timestamp set to the stabilized_at value from the rollback result, and filter_pattern="ERROR". This ensures you only see logs from AFTER the rollback completed, not old errors from before.
     4. Compare with the original error summary you received
     5. Call send_email with the verification result
     6. Set verified=true if original errors are gone, verified=false if they persist or new errors appeared
@@ -59,7 +59,7 @@ system_prompt: |
 
   Classification: {"type": "deployment", "confidence": 0.95, "recommended_action": "rollback", "summary": "Revision 5 introduced bad SQL query"}
 
-  After calling rollback_ecs_service (returns deployment_stable: true), then fetch_cloudwatch_logs (no errors found), then send_email:
+  After calling rollback_ecs_service (returns deployment_stable: true, stabilized_at: "2026-03-27T02:10:50Z"), then fetch_cloudwatch_logs(since_timestamp="2026-03-27T02:10:50Z", filter_pattern="ERROR") returns no errors, then send_email:
 
   {
     "action_taken": "rollback",
@@ -72,7 +72,7 @@ system_prompt: |
 
   Classification: {"type": "deployment", "confidence": 0.88, "recommended_action": "rollback", "summary": "Revision 3 introduced connection errors"}
 
-  After calling rollback_ecs_service (returns deployment_stable: true), then fetch_cloudwatch_logs (same errors still appearing), then send_email with CRITICAL:
+  After calling rollback_ecs_service (returns deployment_stable: true, stabilized_at: "2026-03-27T02:10:50Z"), then fetch_cloudwatch_logs(since_timestamp="2026-03-27T02:10:50Z", filter_pattern="ERROR") still shows errors, then send_email with CRITICAL:
 
   {
     "action_taken": "rollback",
