@@ -20,10 +20,6 @@ TOOL_FETCH_LOGS = {
                 "type": "string",
                 "description": "Optional CloudWatch Logs filter pattern (e.g., 'ERROR')",
             },
-            "since_timestamp": {
-                "type": "string",
-                "description": "ISO 8601 timestamp. Only return logs after this time. Overrides minutes_ago. Use the stabilized_at value from rollback_ecs_service for post-rollback verification.",
-            },
         },
         "required": ["log_group_name"],
     },
@@ -136,4 +132,4 @@ TOOL_COMPARE_COMMITS = {
 # Tool sets per agent (least-privilege)
 SUMMARIZATION_TOOLS = [TOOL_FETCH_LOGS]
 CLASSIFICATION_TOOLS = [TOOL_FETCH_LOGS, TOOL_DESCRIBE_ECS, TOOL_GET_TASK_DEF, TOOL_COMPARE_COMMITS]
-REMEDIATION_TOOLS = [TOOL_ROLLBACK_ECS, TOOL_SEND_EMAIL, TOOL_FETCH_LOGS]
+REMEDIATION_TOOLS = [TOOL_ROLLBACK_ECS, TOOL_SEND_EMAIL]

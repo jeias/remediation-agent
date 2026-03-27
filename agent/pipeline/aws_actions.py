@@ -17,12 +17,8 @@ ses_client = boto3.client("ses")
 
 
 def fetch_cloudwatch_logs(log_group_name: str, minutes_ago: int = 15,
-                          filter_pattern: str | None = None,
-                          since_timestamp: str | None = None) -> str:
-    if since_timestamp:
-        start_time = int(datetime.fromisoformat(since_timestamp).timestamp() * 1000)
-    else:
-        start_time = int((datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).timestamp() * 1000)
+                          filter_pattern: str | None = None) -> str:
+    start_time = int((datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).timestamp() * 1000)
     end_time = int(datetime.now(timezone.utc).timestamp() * 1000)
 
     kwargs = {
@@ -91,7 +87,6 @@ def rollback_ecs_service(cluster_name: str, service_name: str) -> str:
             "rolled_back_to": previous_revision,
             "deployment_stable": True,
             "wait_seconds": 0,
-            "stabilized_at": datetime.now(timezone.utc).isoformat(),
             "message": f"Would rollback from revision {current_revision} to {previous_revision}",
         })
 
@@ -123,15 +118,12 @@ def rollback_ecs_service(cluster_name: str, service_name: str) -> str:
 
     wait_seconds = int(time.monotonic() - start)
 
-    stabilized_at = datetime.now(timezone.utc).isoformat()
-
     result = {
         "success": True,
         "rolled_back_from": current_revision,
         "rolled_back_to": previous_revision,
         "deployment_stable": deployment_stable,
         "wait_seconds": wait_seconds,
-        "stabilized_at": stabilized_at,
     }
     if not deployment_stable:
         result["message"] = f"Deployment in progress but not yet stable after {wait_seconds}s"
