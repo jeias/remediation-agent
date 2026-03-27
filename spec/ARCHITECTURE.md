@@ -50,14 +50,16 @@ The agent is not a single monolithic LLM call. It is a **sequential pipeline of 
 │  │  - fetch_logs    │   │  - fetch_logs     │   │  - rollback          │  │
 │  │                  │   │  - describe_ecs   │   │  - send_email        │  │
 │  │                  │   │                   │   │                      │  │
-│  │  Output:         │   │  Output:          │   │  Role:               │  │
-│  │  Structured JSON │   │  Classification   │   │  REVIEWER/GATEKEEPER │  │
-│  │  summary         │   │  + confidence     │   │  Reviews confidence, │  │
-│  │                  │   │  + action hint    │   │  gates execution,    │  │
-│  │                  │   │                   │   │  composes email      │  │
+│  │  Output:         │   │  + get_task_def   │   │  Role:               │  │
+│  │  Structured JSON │   │  + compare_commits│   │  REVIEWER/GATEKEEPER │  │
+│  │  summary         │   │                   │   │  Reviews confidence, │  │
+│  │                  │   │  Output:          │   │  gates execution,    │  │
+│  │                  │   │  Classification   │   │  composes email      │  │
+│  │                  │   │  + confidence     │   │                      │  │
+│  │                  │   │  + reasoning      │   │                      │  │
 │  └──────────────────┘   └───────────────────┘   └──────────────────────┘  │
 │                                                                           │
-│  Validation: Pydantic schema enforced between each agent step             │
+│  Validation: Structured outputs (API-enforced) + strict tool use           │
 │  If classification = "not_actionable" ──▶ log and exit                    │
 │  If confidence < threshold ──▶ Agent 3 downgrades to notify-only          │
 │  If any agent fails ──▶ escalate to humans (fail open)                    │
@@ -97,7 +99,7 @@ SQS Event (CloudWatch Alarm payload)
 │  Input:  summary JSON from previous step                          │
 │  Action: calls describe_ecs_service to check deployment state     │
 │          may call fetch_cloudwatch_logs for additional context    │
-│          reasons step-by-step in <reasoning> tags before deciding │
+│          uses get_task_definition + compare_git_commits for diffs │
 │  Output: {                                                        │
 │    "type": "deployment" | "infrastructure" | "transient",         │
 │    "severity": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL",            │
@@ -219,7 +221,7 @@ class SummarizationOutput(BaseModel):
         "connection_error", "query_error", "import_error",
         "syntax_error", "runtime_error", "timeout", "unknown"
     ]
-    first_seen: str
+    first_seen: str | None = None
     frequency: int = Field(ge=0)
     affected_service: str
     key_logs: list[str] = Field(max_length=5)
@@ -241,7 +243,7 @@ class SummarizationOutput(BaseModel):
 
 ## Agent 2: Classification
 
-**Model**: Claude Sonnet (`claude-sonnet-4-6-latest`)
+**Model**: Claude Sonnet (`claude-sonnet-4-6`)
 **Temperature**: `0` (deterministic classification, consistency is critical)
 **Purpose**: Classify the incident type and severity, recommend an action, and express confidence. Uses the summary from Agent 1 plus ECS service state to make an informed decision.
 
@@ -370,6 +372,7 @@ the database itself is unreachable, not a code problem.
 
 ```python
 class ClassificationOutput(BaseModel):
+    reasoning: str = Field(description="Step-by-step reasoning before classification")
     type: Literal["deployment", "infrastructure", "transient"]
     severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
     confidence: float = Field(ge=0.0, le=1.0)
@@ -383,12 +386,14 @@ class ClassificationOutput(BaseModel):
 |------|---------|
 | `fetch_cloudwatch_logs` | Fetch additional log context if the summary is insufficient |
 | `describe_ecs_service` | Check current and previous task definition revisions, deployment status |
+| `get_task_definition` | Inspect a specific revision's container image tag (git SHA) |
+| `compare_git_commits` | Compare two git SHAs to see what code changed between deployments |
 
 ---
 
 ## Agent 3: Remediation (Reviewer/Gatekeeper)
 
-**Model**: Claude Sonnet (`claude-sonnet-4-6-latest`)
+**Model**: Claude Sonnet (`claude-sonnet-4-6`)
 **Temperature**: `0.3` (slight flexibility for email composition, deterministic for action decisions)
 **Purpose**: Review the Classification agent's recommendation, gate execution based on confidence, execute the appropriate action, and compose a rich contextual notification email.
 
@@ -484,6 +489,7 @@ disruption. Sending notification for manual investigation instead.
 class RemediationOutput(BaseModel):
     action_taken: Literal["rollback", "escalated", "notify_only"]
     confidence_accepted: bool
+    verified: bool | None = Field(default=None, description="Null — verification not performed by this agent")
     details: str
 ```
 
@@ -498,146 +504,67 @@ class RemediationOutput(BaseModel):
 
 ## Tool Definitions
 
+All tools use **strict mode** (`strict: true`) with `additionalProperties: false` — the Anthropic API enforces schema compliance at the token level. Enum constraints, required fields, and parameter types are guaranteed, not just suggested.
+
+Tool definitions are in `agent/pipeline/tools.py`. Tool implementations are in `agent/pipeline/aws_actions.py`.
+
+### Tool Sets per Agent (Least-Privilege)
+
+| Agent | Tools |
+|-------|-------|
+| Summarization (Haiku) | `fetch_cloudwatch_logs` |
+| Classification (Sonnet) | `fetch_cloudwatch_logs`, `describe_ecs_service`, `get_task_definition`, `compare_git_commits` |
+| Remediation (Sonnet) | `rollback_ecs_service`, `send_email` |
+
 ### fetch_cloudwatch_logs
 
 Fetches recent log events from the application's CloudWatch log group.
 
-```json
-{
-  "name": "fetch_cloudwatch_logs",
-  "description": "Fetch recent log events from a CloudWatch log group. Returns the most recent log lines within the specified time window.",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "log_group_name": {
-        "type": "string",
-        "enum": ["/ecs/remediation-agent-app"],
-        "description": "The CloudWatch log group to query"
-      },
-      "minutes_ago": {
-        "type": "integer",
-        "default": 15,
-        "description": "How many minutes back to fetch logs"
-      },
-      "filter_pattern": {
-        "type": "string",
-        "description": "Optional CloudWatch Logs filter pattern (e.g., 'ERROR')"
-      }
-    },
-    "required": ["log_group_name"]
-  }
-}
-```
-
-**Implementation notes:**
-- Returns a maximum of 50 log lines (newest first) to stay within token budget
-- Uses `filter_log_events` API with the specified time window
-- `log_group_name` is constrained to an enum to prevent hallucinated log group names
+- Returns max 50 log lines (newest first)
+- `log_group_name` constrained to enum
+- Used by Summarization (investigation) and Classification (additional context)
 
 ### describe_ecs_service
 
-Returns the current deployment state of the ECS service.
+Returns current deployment state: task definition revisions, running count, deployment timestamps.
 
-```json
-{
-  "name": "describe_ecs_service",
-  "description": "Describe the ECS service to check deployment state. Returns current and previous task definition revisions and deployment status.",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "cluster_name": {
-        "type": "string",
-        "enum": ["remediation-agent-cluster"],
-        "description": "The ECS cluster name"
-      },
-      "service_name": {
-        "type": "string",
-        "enum": ["remediation-agent-app"],
-        "description": "The ECS service name"
-      }
-    },
-    "required": ["cluster_name", "service_name"]
-  }
-}
-```
+- `cluster_name` and `service_name` constrained to enums
+- Used by Classification to detect recent deployments
 
-**Implementation notes:**
-- Calls `ecs:DescribeServices` API
-- Returns: current task definition ARN, previous task definition ARN (from deployment history), running count, desired count, last deployment timestamp
-- Both parameters are constrained to enums to prevent acting on wrong services
+### get_task_definition
+
+Gets details of a specific ECS task definition revision, including container image URI and tag (git SHA).
+
+- `task_family` constrained to enum
+- Agent extracts the image tag (git SHA) to identify what code each revision runs
+- Used by Classification to compare current vs previous deployment
+
+### compare_git_commits
+
+Compares two git commits via GitHub API and returns code changes (commit messages, file diffs).
+
+- Agent provides base_sha and head_sha (extracted from task definitions)
+- Returns max 5 commits, max 10 files, patches truncated to 500 chars
+- Graceful degradation: returns error JSON if GitHub API is unavailable — agent continues with lower confidence
+- Used by Classification to correlate code changes with error patterns
 
 ### rollback_ecs_service
 
 Rolls back the ECS service to the previous task definition revision.
 
-```json
-{
-  "name": "rollback_ecs_service",
-  "description": "Rollback an ECS service to the previous task definition revision. This will trigger a new deployment with the previous version.",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "cluster_name": {
-        "type": "string",
-        "enum": ["remediation-agent-cluster"],
-        "description": "The ECS cluster name"
-      },
-      "service_name": {
-        "type": "string",
-        "enum": ["remediation-agent-app"],
-        "description": "The ECS service name"
-      }
-    },
-    "required": ["cluster_name", "service_name"]
-  }
-}
-```
-
-**Implementation notes:**
-- Calls `ecs:DescribeServices` to get the current task definition
-- Extracts the revision number, decrements by 1
-- Calls `ecs:UpdateService` with the previous task definition ARN
-- Returns the old and new task definition revisions for audit
+- `cluster_name` and `service_name` constrained to enums
+- After calling `ecs:UpdateService`, **polls ECS every 10s** until deployment is stable (running_count matches desired_count, single PRIMARY deployment) or timeout
+- Returns `deployment_stable: true/false` and `wait_seconds`
+- Prevents rollback to revision 1 (no previous revision)
+- Respects DRY_RUN mode
 
 ### send_email
 
-Sends an incident notification or escalation email via AWS SES.
+Sends incident notification or escalation email via AWS SES.
 
-```json
-{
-  "name": "send_email",
-  "description": "Send an incident notification or escalation email via AWS SES.",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "to": {
-        "type": "string",
-        "enum": ["team@company.com", "ops-team@company.com"],
-        "description": "Recipient email address"
-      },
-      "subject": {
-        "type": "string",
-        "description": "Email subject line"
-      },
-      "body": {
-        "type": "string",
-        "description": "Email body with incident details"
-      },
-      "severity": {
-        "type": "string",
-        "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
-        "description": "Incident severity level"
-      }
-    },
-    "required": ["to", "subject", "body", "severity"]
-  }
-}
-```
-
-**Implementation notes:**
-- Uses `ses:SendEmail` API
-- `to` is constrained to known email addresses to prevent misuse
-- In DRY_RUN mode, logs the email content instead of sending
+- `to` constrained to configured email addresses (from env vars)
+- `severity` constrained to enum: LOW, MEDIUM, HIGH, CRITICAL
+- Respects DRY_RUN mode
 
 ---
 
@@ -648,7 +575,7 @@ Sends an incident notification or escalation email via AWS SES.
 | Component | Technology | Naming |
 |-----------|-----------|--------|
 | Compute (App) | ECS Fargate (0.25 vCPU / 0.5 GB) | `remediation-agent-app` |
-| Compute (Agent) | AWS Lambda (512 MB / 300s timeout) | `remediation-agent-lambda` |
+| Compute (Agent) | AWS Lambda (512 MB / 600s timeout, ZIP deploy) | `remediation-agent-lambda` |
 | Database | RDS PostgreSQL db.t3.micro | `remediation-agent-db` |
 | Container Registry | ECR Public | `remediation-agent-app` |
 | Load Balancer | Application Load Balancer | `remediation-agent-alb` |
@@ -712,9 +639,12 @@ ecs:DescribeTaskDefinition on arn:aws:ecs:*:*:task-definition/remediation-agent-
 # SES — send email from verified identity only
 ses:SendEmail           on arn:aws:ses:*:*:identity/*
 
-# Secrets Manager — read API key
-secretsmanager:GetSecretValue on arn:aws:secretsmanager:*:*:secret:remediation-agent/anthropic-api-key-*
+# Secrets Manager — read API key + GitHub token
+secretsmanager:GetSecretValue on arn:aws:secretsmanager:*:*:secret:remediation-agent/*
 
+# IAM — pass roles to ECS when updating service (AWS best practice)
+iam:GetRole, iam:PassRole on ECS execution + task role ARNs
+  Condition: iam:PassedToService = ecs-tasks.amazonaws.com
 ```
 
 ### SQS Configuration
@@ -722,7 +652,7 @@ secretsmanager:GetSecretValue on arn:aws:secretsmanager:*:*:secret:remediation-a
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
 | Queue Type | Standard | Ordering not critical for alarm events |
-| Visibility Timeout | 360s | Greater than Lambda timeout (300s) to prevent duplicate processing |
+| Visibility Timeout | 720s | Greater than Lambda timeout (600s) to prevent duplicate processing |
 | Message Retention | 4 days | Default, sufficient for retry scenarios |
 | Receive Wait Time | 20s | Long polling enabled for cost efficiency |
 | DLQ Max Receive Count | 3 | After 3 failed Lambda invocations, message goes to DLQ |
@@ -838,7 +768,7 @@ Each Claude API call logs:
 {
   "trace_id": "inc-20260325-143201-a1b2c3",
   "agent": "classification",
-  "model": "claude-sonnet-4-6-latest",
+  "model": "claude-sonnet-4-6",
   "input_tokens": 1800,
   "output_tokens": 450,
   "estimated_cost_usd": 0.0123,
@@ -866,14 +796,14 @@ An **incident summary** is logged at the end of the pipeline:
 
 ### Reasoning Trace
 
-The Classification agent's `<reasoning>` output is logged separately for debugging and audit:
+The Classification agent's `reasoning` field (from structured output) is logged separately for debugging and audit:
 
 ```json
 {
   "trace_id": "inc-20260325-143201-a1b2c3",
   "agent": "classification",
   "step": "reasoning",
-  "content": "The logs show a DNS resolution failure for a database host. The ECS service deployed a new revision (5) 8 minutes ago..."
+  "content": "ECS shows revision 5 deployed 12 min ago. get_task_definition shows image tag changed from abc123f to def456a. compare_git_commits shows app/main.py added 'description' column to SQL query. This directly matches the UndefinedColumn error..."
 }
 ```
 
@@ -891,44 +821,21 @@ In addition to app-level alarms, the agent itself is monitored:
 
 ## Guardrails & Safety
 
-### Constrained Tool Schemas
+### Strict Tool Use + Structured Outputs (API-Enforced)
 
-All tool parameters that reference AWS resources use **enum values** to prevent the agent from:
-- Operating on the wrong ECS service or cluster
-- Reading logs from unrelated log groups
-- Sending emails to unintended recipients
+Two complementary Anthropic API features enforce schema compliance at the token level:
 
-```python
-# Example: service_name is constrained
-"service_name": {
-    "type": "string",
-    "enum": ["remediation-agent-app"]  # Claude cannot hallucinate a different service
-}
-```
+**Strict tool use** (`strict: true` on all tools):
+- Tool inputs are guaranteed to match the `input_schema`
+- Enum constraints (cluster name, service name, email recipients) are enforced by the API, not just suggested
+- `additionalProperties: false` prevents agents from inventing extra parameters
 
-### Inter-Agent Schema Validation
+**Structured outputs** (`output_config` with `json_schema`):
+- Each agent's final response is guaranteed valid JSON matching the Pydantic schema
+- No retry loops needed for malformed output — the API handles it
+- `transform_schema()` from the Anthropic SDK converts Pydantic models to the required format
 
-Every agent's output is validated against a **Pydantic model** before being passed to the next agent. This prevents cascading failures from malformed LLM output.
-
-```python
-# After each agent call:
-for attempt in range(2):
-    response = call_claude(agent_config, messages)
-    try:
-        return OutputSchema.model_validate_json(extract_json(response))
-    except ValidationError as e:
-        # Retry once with a correction prompt
-        messages.append({"role": "assistant", "content": response})
-        messages.append({"role": "user", "content": f"Your response was not valid JSON: {e}. Please try again with the correct schema."})
-
-# If both attempts fail → fail open (escalate to humans)
-raise AgentOutputValidationError(agent_name, response)
-```
-
-This pattern:
-- Catches malformed JSON immediately (not silently downstream)
-- Gives the agent one chance to self-correct
-- Fails open if the agent cannot produce valid output
+Together, these eliminate an entire class of agent reliability issues (invalid JSON, hallucinated parameters, wrong types) without any application-level validation code.
 
 ### Confidence-Based Gating
 
@@ -943,7 +850,7 @@ This prevents the system from taking irreversible actions when the diagnosis is 
 
 ### Max Tool Calls & Loop Protection
 
-- **Max tool calls per agent**: 5 (prevents infinite loops in the agentic loop)
+- **Max tool calls per agent**: 5 default, 8 for Classification and Remediation (prevents infinite loops)
 - **SQS DLQ**: After 3 failed Lambda invocations, the message is moved to the DLQ for manual review.
 
 ### Dry Run Mode
@@ -1029,35 +936,37 @@ If any agent in the pipeline fails (unexpected Claude response, API error, tool 
 - `agent/agents.py` — Summarization, Classification, Remediation agent classes
 - `agent/tools.py` — Tool definitions (schemas) for Claude
 - `agent/aws_actions.py` — Tool implementations (boto3 calls)
-- `agent/config.py` — Constants, model IDs, resource names, DRY_RUN flag
-- `agent/tracing.py` — Structured logging with trace IDs and token tracking
-- `lambda.tf` — Lambda function, execution role, Secrets Manager
-- Local testing with sample SQS event payloads and real Claude API
+- `agent/pipeline/config.py` — Constants, resource names, DRY_RUN flag
+- `agent/pipeline/schemas.py` — Pydantic output models
+- `agent/pipeline/tracing.py` — Structured logging with trace IDs and token tracking
+- `agent/pipeline/prompts/*.yaml` — System prompts with model and temperature per agent
+- `agent/test_local.py` — Local integration test
+- `infra/lambda.tf` — Lambda function (ZIP), execution role, Secrets Manager
+- `scripts/deploy-agent.sh` — Build ZIP and update Lambda
 
 **Validation**: Local invocation with a mock SQS event produces correct agent pipeline output.
 
-### Phase 4: Monitoring & Alerting Pipeline
+### Phase 4: Monitoring & Alerting Pipeline (done)
 
 **Goal**: CloudWatch alarms, EventBridge rules, SQS queue — the full alerting pipeline connecting app to agent.
 
 **Deliverables:**
-- `monitoring.tf` — CloudWatch alarms (running task count, error rate metric filter)
-- `sqs.tf` — SQS queue, DLQ, EventBridge rule targeting SQS
-- `lambda.tf` updated — SQS event source mapping
-- `ses.tf` — SES email identity verification
+- `infra/monitoring.tf` — CloudWatch alarms (error rate metric filter, Lambda errors, DLQ depth, Lambda duration)
+- `infra/sqs.tf` — SQS queue, DLQ, EventBridge rule targeting SQS
+- `infra/lambda.tf` updated — SQS event source mapping (batch size 1, max concurrency 2)
+- `infra/ses.tf` — SES email identity verification
 
-**Validation**: Manually trigger a CloudWatch alarm → verify Lambda is invoked with correct event payload.
+**Validation**: Manually trigger a CloudWatch alarm → Lambda invoked with correct event payload → agent pipeline runs.
 
-### Phase 5: Demo Scripts & Polish
+### Phase 5: Demo Scripts & Polish (done)
 
 **Goal**: End-to-end demo-ready system with scripts for triggering both scenarios.
 
 **Deliverables:**
-- `scripts/deploy-broken.sh` — Registers a broken task definition (wrong DATABASE_HOST) and updates the ECS service
-- `scripts/deploy-healthy.sh` — Restores the healthy task definition (for resetting between demos)
-- `scripts/stop-db.sh` — Stops the RDS instance
-- `scripts/start-db.sh` — Starts the RDS instance
-- `scripts/tail-agent-logs.sh` — Tails the Lambda CloudWatch log group with formatted output
+- `scripts/commit-and-deploy.sh` — Commits changes, pushes, deploys app with git SHA tag
+- `scripts/call-items.sh` — Continuously calls GET /items (Ctrl+C to stop)
+- `scripts/deploy.sh` — Builds Docker image, tags with git SHA, registers new task def, updates ECS service
+- `scripts/deploy-agent.sh` — Builds Lambda ZIP, uploads to AWS
 - End-to-end testing of both scenarios
 - README with demo instructions
 
@@ -1094,19 +1003,24 @@ Summary of AI agent best practices applied in this architecture:
 
 | # | Best Practice | Status | Implementation |
 |---|--------------|--------|----------------|
-| 1 | Idempotency for at-least-once delivery | Production | Documented as production requirement — DynamoDB with TTL and conditional writes |
-| 2 | Schema validation between agents | Done | Pydantic models with 1-retry correction loop |
-| 3 | Confidence scoring in classification | Done | Float 0.0-1.0 with guidelines per range |
+| 1 | Structured outputs (API-enforced JSON) | Done | `output_config` + `transform_schema` guarantees valid JSON matching Pydantic schemas |
+| 2 | Strict tool use (API-enforced inputs) | Done | `strict: true` + `additionalProperties: false` on all 6 tools — enum constraints enforced at token level |
+| 3 | Confidence scoring in classification | Done | Float 0.0-1.0 with guidelines per range (0.95+ with code diff match) |
 | 4 | Reviewer/Gatekeeper pattern for destructive actions | Done | Agent 3 reviews confidence before executing rollback |
-| 5 | Few-shot examples in system prompts | Done | Examples for each classification type and remediation scenario |
-| 6 | Chain-of-thought before structured output | Done | `<reasoning>` tags in Classification agent |
-| 7 | Temperature tuning per agent | Done | 0 for extraction/classification, 0.3 for remediation |
-| 8 | Agent-level retry for invalid outputs | Done | 1-retry with correction prompt before fail-open |
-| 9 | Observability on the agent itself | Done | Lambda error, DLQ depth, and duration alarms |
-| 10 | Constrained tool schemas (enum values) | Done | All resource identifiers use enums |
+| 5 | Few-shot examples in YAML prompts | Done | Examples for each classification type and remediation scenario |
+| 6 | Chain-of-thought as structured output field | Done | `reasoning` field in ClassificationOutput (not XML tags) |
+| 7 | Temperature tuning per agent | Done | 0 for extraction/classification, 0.3 for remediation (configured in YAML) |
+| 8 | Atomic tools, agent orchestrates | Done | Classification agent uses 4 tools in sequence: describe_ecs → get_task_def x2 → compare_commits |
+| 9 | Code diff for root cause analysis | Done | `get_task_definition` + `compare_git_commits` tools correlate code changes with errors |
+| 10 | Constrained tool schemas (enum values) | Done | All resource identifiers use enums, enforced by strict mode |
 | 11 | Fail open to humans | Done | Escalation email on any pipeline failure |
-| 12 | Dry run mode | Done | `DRY_RUN` env var skips destructive actions |
+| 12 | Dry run mode | Done | `DRY_RUN` env var skips destructive actions (defaults to true) |
 | 13 | Token and cost tracking per agent step | Done | Structured JSON logs with trace ID |
 | 14 | Defense in depth (2 LLM evaluations agree) | Done | Classification proposes, Remediation validates |
-| 15 | Least-privilege tool access per agent | Done | Each agent only has the tools it needs |
+| 15 | Least-privilege tool access per agent | Done | Summarization: 1 tool, Classification: 4 tools, Remediation: 2 tools |
 | 16 | Sequential pipeline pattern (justified) | Done | Pattern comparison table with rationale |
+| 17 | Rollback with deployment verification | Done | `rollback_ecs_service` polls ECS until deployment stable before returning |
+| 18 | Git SHA image tagging | Done | Deploy script tags images with commit SHA for traceability |
+| 19 | YAML-based prompt management | Done | System prompts in `pipeline/prompts/*.yaml`, separate from code |
+| 20 | Observability on the agent itself | Done | Lambda error, DLQ depth, and duration CloudWatch alarms |
+| 21 | Idempotency for at-least-once delivery | Production | Documented as production requirement |

@@ -2,6 +2,7 @@ from pipeline.config import CLUSTER_NAME, SERVICE_NAME, LOG_GROUP_NAME, SES_TEAM
 
 TOOL_FETCH_LOGS = {
     "name": "fetch_cloudwatch_logs",
+    "strict": True,
     "description": "Fetch recent log events from a CloudWatch log group. Returns the most recent log lines within the specified time window.",
     "input_schema": {
         "type": "object",
@@ -13,8 +14,7 @@ TOOL_FETCH_LOGS = {
             },
             "minutes_ago": {
                 "type": "integer",
-                "default": 15,
-                "description": "How many minutes back to fetch logs",
+                "description": "How many minutes back to fetch logs (default 15)",
             },
             "filter_pattern": {
                 "type": "string",
@@ -22,11 +22,13 @@ TOOL_FETCH_LOGS = {
             },
         },
         "required": ["log_group_name"],
+        "additionalProperties": False,
     },
 }
 
 TOOL_DESCRIBE_ECS = {
     "name": "describe_ecs_service",
+    "strict": True,
     "description": "Describe the ECS service to check deployment state. Returns current and previous task definition revisions and deployment status.",
     "input_schema": {
         "type": "object",
@@ -43,11 +45,13 @@ TOOL_DESCRIBE_ECS = {
             },
         },
         "required": ["cluster_name", "service_name"],
+        "additionalProperties": False,
     },
 }
 
 TOOL_ROLLBACK_ECS = {
     "name": "rollback_ecs_service",
+    "strict": True,
     "description": "Rollback an ECS service to the previous task definition revision. Only use when classification confidence >= 0.8 and type is 'deployment'.",
     "input_schema": {
         "type": "object",
@@ -64,11 +68,13 @@ TOOL_ROLLBACK_ECS = {
             },
         },
         "required": ["cluster_name", "service_name"],
+        "additionalProperties": False,
     },
 }
 
 TOOL_SEND_EMAIL = {
     "name": "send_email",
+    "strict": True,
     "description": "Send an incident notification or escalation email via AWS SES. Always called — either as action notification or escalation.",
     "input_schema": {
         "type": "object",
@@ -87,11 +93,13 @@ TOOL_SEND_EMAIL = {
             },
         },
         "required": ["to", "subject", "body", "severity"],
+        "additionalProperties": False,
     },
 }
 
 TOOL_GET_TASK_DEF = {
     "name": "get_task_definition",
+    "strict": True,
     "description": "Get details of a specific ECS task definition revision, including the container image URI and tag (git SHA). Use this to find what code a specific revision is running.",
     "input_schema": {
         "type": "object",
@@ -107,11 +115,13 @@ TOOL_GET_TASK_DEF = {
             },
         },
         "required": ["task_family", "revision"],
+        "additionalProperties": False,
     },
 }
 
 TOOL_COMPARE_COMMITS = {
     "name": "compare_git_commits",
+    "strict": True,
     "description": "Compare two git commits and return the code changes (commit messages, changed files, diffs). Use this to understand what code changed between deployments.",
     "input_schema": {
         "type": "object",
@@ -126,6 +136,7 @@ TOOL_COMPARE_COMMITS = {
             },
         },
         "required": ["base_sha", "head_sha"],
+        "additionalProperties": False,
     },
 }
 
