@@ -76,6 +76,22 @@ data "aws_iam_policy_document" "lambda_permissions" {
     resources = ["*"]
   }
 
+  # IAM - pass role to ECS when updating service task definition
+  # Required by UpdateService when changing task definitions (AWS best practice)
+  statement {
+    sid       = "PassRoleToECS"
+    actions   = ["iam:GetRole", "iam:PassRole"]
+    resources = [
+      aws_iam_role.ecs_task_execution.arn,
+      aws_iam_role.ecs_task.arn,
+    ]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+
   # SES - send email
   statement {
     sid       = "SESSendEmail"

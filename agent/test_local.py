@@ -4,7 +4,9 @@ Requires: ANTHROPIC_API_KEY env var and AWS credentials (profile: dev).
 
 Usage:
   cd agent
-  ANTHROPIC_API_KEY=sk-... AWS_PROFILE=dev uv run python test_local.py
+  export ANTHROPIC_API_KEY="sk-..."
+  export AWS_PROFILE=dev
+  uv run python test_local.py
 """
 
 import json
@@ -18,7 +20,7 @@ import anthropic
 from pipeline.tracing import generate_trace_id, TraceLogger
 from pipeline.agents import run_summarization, run_classification, run_remediation
 
-# Mock SQS event (same as what Lambda receives)
+# Real alarm event (from CloudWatch → EventBridge → SQS)
 MOCK_EVENT = {
     "Records": [
         {
@@ -27,9 +29,16 @@ MOCK_EVENT = {
                     "alarmName": "remediation-agent-error-rate",
                     "state": {
                         "value": "ALARM",
-                        "reason": "Threshold crossed: 10 datapoints >= threshold (10)",
+                        "reason": "Threshold Crossed: 1 datapoint [42.0 (27/03/26 01:08:00)] was greater than or equal to the threshold (10.0).",
+                        "timestamp": "2026-03-27T01:09:14.563+0000",
                     },
-                    "previousState": {"value": "OK"},
+                    "previousState": {
+                        "value": "OK",
+                        "timestamp": "2026-03-27T00:55:14.563+0000",
+                    },
+                    "configuration": {
+                        "description": "App error rate exceeded threshold — triggers remediation agent",
+                    },
                 },
             })
         }
@@ -38,7 +47,6 @@ MOCK_EVENT = {
 
 
 def main():
-    # Use API key from env var directly (skip Secrets Manager)
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         print("Set ANTHROPIC_API_KEY env var")
@@ -72,7 +80,7 @@ def main():
     print(f"Result: {remediation.model_dump_json(indent=2)}")
 
     trace_logger.log_incident_summary(summary, classification, remediation, dry_run=True)
-    print(f"\n=== Pipeline complete: {remediation.action_taken} ===")
+    print(f"\n=== Pipeline complete: {remediation.action_taken} (verified: {remediation.verified}) ===")
 
 
 if __name__ == "__main__":

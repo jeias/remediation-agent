@@ -74,6 +74,7 @@ def run_agent(
             temperature=temperature,
             system=system_prompt,
             tools=tools,
+            tool_choice={"type": "auto", "disable_parallel_tool_use": True},
             messages=current_messages,
             output_config=output_config,
         )
