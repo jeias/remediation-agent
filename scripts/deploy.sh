@@ -32,12 +32,14 @@ CURRENT_TASK_DEF=$(aws ecs describe-task-definition \
   --query 'taskDefinition' \
   --output json)
 
-# Strip fields that can't be re-registered
+# Strip non-registrable fields and update image tag to new SHA
+NEW_IMAGE="$ECR_REPO:$IMAGE_TAG"
 NEW_TASK_DEF=$(echo "$CURRENT_TASK_DEF" | python3 -c "
 import json, sys
 td = json.load(sys.stdin)
 for key in ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes', 'compatibilities', 'registeredAt', 'registeredBy']:
     td.pop(key, None)
+td['containerDefinitions'][0]['image'] = '$NEW_IMAGE'
 print(json.dumps(td))
 ")
 
