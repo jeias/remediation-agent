@@ -16,7 +16,7 @@ ecs_client = boto3.client("ecs")
 ses_client = boto3.client("ses")
 
 
-def fetch_cloudwatch_logs(log_group_name: str, minutes_ago: int = 15,
+def fetch_cloudwatch_logs(log_group_name: str, minutes_ago: int = 5,
                           filter_pattern: str | None = None) -> str:
     start_time = int((datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).timestamp() * 1000)
     end_time = int(datetime.now(timezone.utc).timestamp() * 1000)

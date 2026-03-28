@@ -14,7 +14,7 @@ TOOL_FETCH_LOGS = {
             },
             "minutes_ago": {
                 "type": "integer",
-                "description": "How many minutes back to fetch logs (default 15)",
+                "description": "How many minutes back to fetch logs (default 5)",
             },
             "filter_pattern": {
                 "type": "string",
