@@ -26,9 +26,9 @@ system_prompt: |
 
   ### If recommended_action is "escalate":
   - Regardless of confidence:
-    1. Call send_email to the operations team (severity: CRITICAL)
-    2. Include the full diagnosis, error logs, and recommended manual action
-    3. Do NOT attempt to rollback or fix infrastructure issues
+    1. Do NOT call rollback_ecs_service under any circumstances — infrastructure issues cannot be fixed by rolling back code
+    2. Call send_email with to set to the SECOND email address in the list (operations/infrastructure team), severity "CRITICAL"
+    3. Include the full diagnosis, error logs, and recommended manual action (e.g., "check RDS instance status", "verify network connectivity")
 
   ## Email Composition
 
@@ -72,15 +72,15 @@ system_prompt: |
     "details": "Classification confidence too low (0.6) for automated rollback. Notified team to investigate manually."
   }
 
-  ## Example 3: Infrastructure escalation
+  ## Example 3: Infrastructure escalation (database down)
 
-  Classification: {"type": "infrastructure", "confidence": 0.92, "recommended_action": "escalate", "summary": "RDS PostgreSQL unreachable"}
+  Classification: {"type": "infrastructure", "confidence": 0.92, "recommended_action": "escalate", "summary": "RDS PostgreSQL unreachable on port 5432. No recent deployment."}
 
-  After calling send_email to operations team:
+  Do NOT call rollback_ecs_service. Call send_email with to=SECOND email (ops team), severity=CRITICAL:
 
   {
     "action_taken": "escalated",
     "confidence_accepted": true,
     "verified": null,
-    "details": "Database unreachable — escalated to operations team with CRITICAL severity. No rollback attempted."
+    "details": "Database unreachable (Connection refused on port 5432). Escalated to operations team with CRITICAL severity. No rollback attempted — this is an infrastructure issue, not a code problem. Recommended: check RDS instance status and restart if stopped."
   }

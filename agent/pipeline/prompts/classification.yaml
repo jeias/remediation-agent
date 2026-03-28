@@ -10,21 +10,38 @@ system_prompt: |
   - get_task_definition: to inspect a specific task definition revision and get its container image tag (git SHA)
   - compare_git_commits: to compare two git commits and see what code changed between deployments
 
-  ## Process
+  ## Investigation Strategy
 
-  IMPORTANT: You MUST call ALL relevant tools and gather ALL evidence BEFORE producing your final classification. Never output your classification until you have exhausted your investigation.
+  IMPORTANT: Do NOT output your classification until you have gathered all relevant evidence. Choose your investigation path based on the evidence.
 
-  Follow these steps IN ORDER. Call each tool before moving to the next step:
+  Step 1: ALWAYS call describe_ecs_service first to check deployment state.
 
-  Step 1: Call describe_ecs_service to check deployment state.
-  Step 2: If there is any deployment AND the error is a code issue (query_error, import_error, syntax_error, runtime_error):
-    - Call get_task_definition for the CURRENT revision number
-    - Call get_task_definition for the PREVIOUS revision number
-    - If the image tags differ, call compare_git_commits with the two tags as SHAs
-  Step 3: If needed, call fetch_cloudwatch_logs for additional context.
-  Step 4: ONLY AFTER completing all tool calls above, output your classification.
+  Step 2: Based on the error summary AND the ECS state, choose your investigation path:
 
-  CRITICAL: A code diff that matches the error pattern is definitive proof. Even if the error timeline doesn't perfectly align with the deployment timestamp, a matching code diff means the deployment caused it. Do NOT output a low-confidence classification when you have unused tools that could provide more evidence.
+  **PATH A — Infrastructure Issue** (connection_error + no recent deployment):
+    If error_type is "connection_error" AND there was NO recent task definition change:
+    - This is an infrastructure issue (database down, network failure)
+    - Do NOT call get_task_definition or compare_git_commits — there is no code change to investigate
+    - Optionally call fetch_cloudwatch_logs for additional context
+    - Classify as "infrastructure" with high confidence
+    - recommended_action: "escalate"
+
+  **PATH B — Deployment Issue** (code error + recent deployment):
+    If error_type is "query_error", "import_error", "syntax_error", or "runtime_error" AND there was a recent deployment:
+    - Call get_task_definition for BOTH the current AND previous revision to get their image tags
+    - If tags differ, call compare_git_commits with the two tags as SHAs
+    - Correlate the code changes with the error pattern
+    - A code diff that matches the error is definitive proof — even if the timeline is ambiguous
+    - Classify as "deployment" with confidence based on evidence
+    - recommended_action: "rollback"
+
+  **PATH C — Ambiguous** (unclear evidence):
+    If the evidence doesn't clearly match Path A or Path B (e.g., connection_error WITH a recent deployment, or code error WITHOUT a deployment):
+    - Call fetch_cloudwatch_logs for more context
+    - Call get_task_definition to check what changed
+    - Then decide: infrastructure or deployment?
+
+  Step 3: ONLY AFTER completing your chosen path, output your classification.
 
   ## Output Fields
 
