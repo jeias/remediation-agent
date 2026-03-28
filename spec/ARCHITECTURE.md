@@ -52,6 +52,7 @@ The agent is not a single monolithic LLM call. It is a **sequential pipeline of 
 │  │                  │   │                   │   │                      │  │
 │  │  Output:         │   │  + get_task_def   │   │  Role:               │  │
 │  │  Structured JSON │   │  + compare_commits│   │  REVIEWER/GATEKEEPER │  │
+│  │                  │   │  + describe_rds   │   │                      │  │
 │  │  summary         │   │                   │   │  Reviews confidence, │  │
 │  │                  │   │  Output:          │   │  gates execution,    │  │
 │  │                  │   │  Classification   │   │  composes email      │  │
@@ -249,124 +250,15 @@ class SummarizationOutput(BaseModel):
 
 ### System Prompt
 
-```
-You are an incident classification agent for cloud infrastructure. You receive a structured
-summary of application errors and must classify the incident.
+Full prompt in `agent/pipeline/prompts/classification.yaml`. Key design:
 
-You have two tools:
-- fetch_cloudwatch_logs: to fetch additional log context if needed
-- describe_ecs_service: to check the current deployment state (task definition revisions,
-  running task count, recent deployments)
+**Triage-first pattern** — the agent reads `error_type` from the summary, then chooses an investigation path:
 
-## Process
+- **PATH A (Deployment)**: `query_error`/`import_error` → `describe_ecs_service` → `get_task_definition` x2 → `compare_git_commits` → classify with code diff evidence
+- **PATH B (Infrastructure)**: `connection_error` → `describe_ecs_service` → `describe_rds_instance` → classify with RDS status → escalate
+- **PATH C (Ambiguous)**: unclear → gather more evidence → decide
 
-1. ALWAYS call describe_ecs_service first to check if a deployment happened recently.
-2. If the summary is unclear, call fetch_cloudwatch_logs for additional context.
-3. Reason step-by-step inside <reasoning> tags before outputting your classification.
-4. Output your classification as a JSON object.
-
-## Reasoning (required)
-
-Before your JSON output, think step by step in <reasoning> tags:
-- What type of error is occurring?
-- Has there been a recent deployment (task definition change)?
-- Is the error in the application code/config or in external infrastructure?
-- How severe is the impact (partial vs. full outage)?
-- How confident am I, and what could make me wrong?
-
-## Output Format
-
-After your reasoning, respond with a JSON object:
-{
-  "type": "deployment" | "infrastructure" | "transient",
-  "severity": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL",
-  "confidence": <float between 0.0 and 1.0>,
-  "recommended_action": "rollback" | "escalate" | "none",
-  "summary": "one-paragraph explanation of the root cause and reasoning"
-}
-
-## Classification Rules
-
-- "deployment": The error started after a recent task definition change. The previous
-  revision was healthy. Root cause is in the new code or configuration.
-  Key indicators: ProgrammingError (query_error), ImportError, or errors that only
-  affect specific endpoints while health check passes. OperationalError with DNS
-  failure also indicates bad deployment config.
-  → recommended_action: "rollback"
-
-- "infrastructure": The error is related to external dependencies (database unreachable,
-  network issues, resource exhaustion). The task definition has NOT changed recently.
-  Key indicators: OperationalError with "Connection refused" on a correct hostname,
-  affecting ALL endpoints including health check.
-  → recommended_action: "escalate"
-
-- "transient": Errors are intermittent, low frequency, or already resolving.
-  → recommended_action: "none"
-
-## Confidence Guidelines
-
-- 0.9-1.0: Strong evidence from both logs and ECS service state
-- 0.7-0.9: Clear evidence from one source, consistent with the other
-- 0.5-0.7: Ambiguous — evidence could support multiple classifications
-- Below 0.5: Insufficient evidence to classify confidently
-
-## Severity Guidelines
-
-- CRITICAL: Service is fully down, all requests failing
-- HIGH: Service is degraded, most requests failing
-- MEDIUM: Partial impact, some requests failing
-- LOW: Minor issue, minimal user impact
-
-## Edge Cases
-
-- If you see BOTH deployment errors AND infrastructure errors: classify based on which
-  came first chronologically. If a deployment happened AND the DB is down, the DB issue
-  takes precedence (infrastructure).
-- If logs are empty or insufficient: set confidence below 0.5 and type to "transient".
-- If the ECS service shows a recent deployment but the errors don't match typical
-  deployment failures: lower your confidence and explain why in the summary.
-
-Be precise. Do not guess — use your tools to gather evidence.
-
-## Examples
-
-### Example 1: Deployment issue (high confidence)
-
-Input summary: {"error_type": "runtime_error", "frequency": 15,
-  "key_logs": ["psycopg2.errors.UndefinedColumn: column \"description\" does not exist"]}
-ECS service state: revision changed from 4 to 5, 12 minutes ago, running_count: 1
-
-<reasoning>
-The logs show a psycopg2.errors.UndefinedColumn error — this is a ProgrammingError,
-meaning the application code has a bug in its SQL query. The error references a column
-"description" that doesn't exist in the items table. The ECS service deployed a new
-revision (5) 12 minutes ago, and the errors started immediately after. The task is
-running (health check passes), but the /items endpoint is failing. The previous
-revision 4 was stable. This is a code bug introduced by the deployment, not an
-infrastructure issue.
-</reasoning>
-
-{"type": "deployment", "severity": "HIGH", "confidence": 0.95,
- "recommended_action": "rollback",
- "summary": "Task definition revision 5 introduced a SQL query referencing non-existent column 'description'. GET /items returns 500. Health check still passes. Previous revision 4 was stable."}
-
-### Example 2: Infrastructure issue (high confidence)
-
-Input summary: {"error_type": "connection_error", "frequency": 200,
-  "key_logs": ["could not connect to server: Connection refused on port 5432"]}
-ECS service state: no deployment in 48 hours, revision 4 stable, running_count: 2
-
-<reasoning>
-The logs show connection refused errors to the correct database host on port 5432.
-The ECS service has not been redeployed recently — revision 4 has been running for
-48 hours. The tasks are running (count: 2) but failing on DB calls. This indicates
-the database itself is unreachable, not a code problem.
-</reasoning>
-
-{"type": "infrastructure", "severity": "CRITICAL", "confidence": 0.92,
- "recommended_action": "escalate",
- "summary": "RDS PostgreSQL unreachable on port 5432. No recent deployment. Database appears stopped or failing."}
-```
+This ensures the agent uses the right tools for each scenario — no wasted code analysis for infrastructure issues, no skipped diagnosis for deployment issues.
 
 ### Output Schema (Pydantic)
 
@@ -388,6 +280,7 @@ class ClassificationOutput(BaseModel):
 | `describe_ecs_service` | Check current and previous task definition revisions, deployment status |
 | `get_task_definition` | Inspect a specific revision's container image tag (git SHA) |
 | `compare_git_commits` | Compare two git SHAs to see what code changed between deployments |
+| `describe_rds_instance` | Check RDS database status (stopped/available) for infrastructure diagnosis |
 
 ---
 
@@ -423,10 +316,10 @@ You have two tools:
 You will receive a classification with a confidence score (0.0 to 1.0).
 
 ### If recommended_action is "rollback":
-- If confidence >= 0.8 AND you agree with the classification:
+- If confidence >= 0.7 AND you agree with the classification:
   1. Call rollback_ecs_service to revert to the previous task definition
   2. Call send_email to notify the team (severity: HIGH)
-- If confidence < 0.8 OR you disagree with the classification:
+- If confidence < 0.7 OR you disagree with the classification:
   1. Do NOT call rollback_ecs_service
   2. Call send_email to notify the team to investigate manually (severity: MEDIUM)
   3. Explain why you did not execute the rollback
@@ -473,7 +366,7 @@ high confidence. Executing rollback.
 Classification: {"type": "deployment", "confidence": 0.6, "recommended_action": "rollback",
   "summary": "Possible deployment issue but errors are intermittent"}
 
-The confidence is below the 0.8 threshold and the errors are intermittent — this could
+The confidence is below the 0.7 threshold and the errors are intermittent — this could
 be a transient issue rather than a bad deployment. Rolling back could cause unnecessary
 disruption. Sending notification for manual investigation instead.
 
@@ -497,7 +390,7 @@ class RemediationOutput(BaseModel):
 
 | Tool | Purpose |
 |------|---------|
-| `rollback_ecs_service` | Update ECS service to the previous task definition revision. Only use when classification confidence >= 0.8 and type is "deployment". |
+| `rollback_ecs_service` | Update ECS service to the previous task definition revision. Only use when classification confidence >= 0.7 and type is "deployment". |
 | `send_email` | Send notification or escalation email via AWS SES. Always called — either as action notification or escalation. |
 
 ---
@@ -513,7 +406,7 @@ Tool definitions are in `agent/pipeline/tools.py`. Tool implementations are in `
 | Agent | Tools |
 |-------|-------|
 | Summarization (Haiku) | `fetch_cloudwatch_logs` |
-| Classification (Sonnet) | `fetch_cloudwatch_logs`, `describe_ecs_service`, `get_task_definition`, `compare_git_commits` |
+| Classification (Sonnet) | `fetch_cloudwatch_logs`, `describe_ecs_service`, `get_task_definition`, `compare_git_commits`, `describe_rds_instance` |
 | Remediation (Sonnet) | `rollback_ecs_service`, `send_email` |
 
 ### fetch_cloudwatch_logs
@@ -548,6 +441,15 @@ Compares two git commits via GitHub API and returns code changes (commit message
 - Graceful degradation: returns error JSON if GitHub API is unavailable — agent continues with lower confidence
 - Used by Classification to correlate code changes with error patterns
 
+### describe_rds_instance
+
+Checks the status of the RDS database instance. Used by Classification in PATH B (infrastructure) to determine WHY the database is unreachable.
+
+- `db_instance_identifier` constrained to enum
+- Returns: status (`available`, `stopped`, `starting`, etc.), engine, endpoint, port
+- Agent interprets the status: "stopped" = manually stopped, "available" + connection refused = network issue
+- Only called for infrastructure investigations, NOT for deployment issues
+
 ### rollback_ecs_service
 
 Rolls back the ECS service to the previous task definition revision.
@@ -575,7 +477,7 @@ Sends incident notification or escalation email via AWS SES.
 | Component | Technology | Naming |
 |-----------|-----------|--------|
 | Compute (App) | ECS Fargate (0.25 vCPU / 0.5 GB) | `remediation-agent-app` |
-| Compute (Agent) | AWS Lambda (512 MB / 600s timeout, ZIP deploy) | `remediation-agent-lambda` |
+| Compute (Agent) | AWS Lambda (512 MB / 600s timeout, ZIP deployment) | `remediation-agent-lambda` |
 | Database | RDS PostgreSQL db.t3.micro | `remediation-agent-db` |
 | Container Registry | ECR Public | `remediation-agent-app` |
 | Load Balancer | Application Load Balancer | `remediation-agent-alb` |
@@ -639,6 +541,9 @@ ecs:DescribeTaskDefinition on arn:aws:ecs:*:*:task-definition/remediation-agent-
 # SES — send email from verified identity only
 ses:SendEmail           on arn:aws:ses:*:*:identity/*
 
+# RDS — describe instance status
+rds:DescribeDBInstances on remediation-agent-db ARN
+
 # Secrets Manager — read API key + GitHub token
 secretsmanager:GetSecretValue on arn:aws:secretsmanager:*:*:secret:remediation-agent/*
 
@@ -652,7 +557,7 @@ iam:GetRole, iam:PassRole on ECS execution + task role ARNs
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
 | Queue Type | Standard | Ordering not critical for alarm events |
-| Visibility Timeout | 720s | Greater than Lambda timeout (600s) to prevent duplicate processing |
+| Visibility Timeout | 660s | Greater than Lambda timeout (600s) to prevent duplicate processing |
 | Message Retention | 4 days | Default, sufficient for retry scenarios |
 | Receive Wait Time | 20s | Long polling enabled for cost efficiency |
 | DLQ Max Receive Count | 3 | After 3 failed Lambda invocations, message goes to DLQ |
@@ -815,7 +720,7 @@ In addition to app-level alarms, the agent itself is monitored:
 |------------|--------|-----------|---------|
 | `remediation-agent-lambda-errors` | Lambda `Errors` | > 0 in 5 min | Agent Lambda is failing |
 | `remediation-agent-dlq-depth` | SQS DLQ `ApproximateNumberOfMessagesVisible` | > 0 | Unprocessable incidents accumulating |
-| `remediation-agent-lambda-duration` | Lambda `Duration` | > 250000ms | Approaching timeout (300s) |
+| `remediation-agent-lambda-duration` | Lambda `Duration` | > 500000ms | Approaching timeout (600s) |
 
 ---
 
@@ -843,14 +748,14 @@ The Remediation agent (Agent 3) acts as a **safety gate** based on the Classific
 
 | Confidence | Action |
 |------------|--------|
-| >= 0.8 | Execute the recommended action (rollback or escalate) |
-| < 0.8 | Downgrade to notification-only — no destructive actions |
+| >= 0.7 | Execute the recommended action (rollback or escalate) |
+| < 0.7 | Downgrade to notification-only — no destructive actions |
 
 This prevents the system from taking irreversible actions when the diagnosis is uncertain.
 
 ### Max Tool Calls & Loop Protection
 
-- **Max tool calls per agent**: 5 default, 8 for Classification and Remediation (prevents infinite loops)
+- **Max tool calls per agent**: 5 default, 12 for Classification (5 tools, may call some twice), 8 for Remediation
 - **SQS DLQ**: After 3 failed Lambda invocations, the message is moved to the DLQ for manual review.
 
 ### Dry Run Mode
@@ -1023,4 +928,5 @@ Summary of AI agent best practices applied in this architecture:
 | 18 | Git SHA image tagging | Done | Deploy script tags images with commit SHA for traceability |
 | 19 | YAML-based prompt management | Done | System prompts in `pipeline/prompts/*.yaml`, separate from code |
 | 20 | Observability on the agent itself | Done | Lambda error, DLQ depth, and duration CloudWatch alarms |
-| 21 | Idempotency for at-least-once delivery | Production | Documented as production requirement |
+| 21 | Infrastructure diagnosis via RDS status | Done | `describe_rds_instance` tool reports DB state (stopped/available) for infrastructure issues |
+| 22 | Idempotency for at-least-once delivery | Production | Documented as production requirement |

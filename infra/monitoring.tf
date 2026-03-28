@@ -76,8 +76,8 @@ resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
   namespace           = "AWS/Lambda"
   period              = 300
   statistic           = "Maximum"
-  threshold           = 250000
-  alarm_description   = "Remediation agent approaching timeout (300s)"
+  threshold           = 500000
+  alarm_description   = "Remediation agent approaching timeout (600s)"
   treat_missing_data  = "notBreaching"
 
   dimensions = {

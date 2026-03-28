@@ -14,6 +14,7 @@ from pipeline.config import (
 logs_client = boto3.client("logs")
 ecs_client = boto3.client("ecs")
 ses_client = boto3.client("ses")
+rds_client = boto3.client("rds")
 
 
 def fetch_cloudwatch_logs(log_group_name: str, minutes_ago: int = 5,
@@ -234,6 +235,19 @@ def compare_git_commits(base_sha: str, head_sha: str) -> str:
     return json.dumps(result, indent=2)
 
 
+def describe_rds_instance(db_instance_identifier: str) -> str:
+    response = rds_client.describe_db_instances(DBInstanceIdentifier=db_instance_identifier)
+    instance = response["DBInstances"][0]
+    result = {
+        "db_instance_identifier": instance["DBInstanceIdentifier"],
+        "status": instance["DBInstanceStatus"],
+        "engine": instance["Engine"],
+        "endpoint": instance.get("Endpoint", {}).get("Address", "N/A"),
+        "port": instance.get("Endpoint", {}).get("Port", "N/A"),
+    }
+    return json.dumps(result, indent=2)
+
+
 # --- Tool Dispatcher ---
 
 TOOL_EXECUTORS = {
@@ -243,6 +257,7 @@ TOOL_EXECUTORS = {
     "send_email": lambda args: send_email(**args),
     "get_task_definition": lambda args: get_task_definition(**args),
     "compare_git_commits": lambda args: compare_git_commits(**args),
+    "describe_rds_instance": lambda args: describe_rds_instance(**args),
 }
 
 
