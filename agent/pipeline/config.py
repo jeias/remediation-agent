@@ -9,7 +9,7 @@ SERVICE_NAME = os.environ.get("SERVICE_NAME", "remediation-agent-app")
 LOG_GROUP_NAME = os.environ.get("LOG_GROUP", "/ecs/remediation-agent-app")
 
 # --- Agent Limits ---
-CONFIDENCE_THRESHOLD = 0.8
+CONFIDENCE_THRESHOLD = 0.7
 MAX_TOOL_CALLS = 5
 MAX_LOG_LINES = 50
 
@@ -19,7 +19,7 @@ GITHUB_TOKEN_SECRET_ARN = os.environ.get("GITHUB_TOKEN_SECRET_ARN", "")
 TASK_FAMILY = os.environ.get("TASK_FAMILY", "remediation-agent-app")
 
 # --- Verification ---
-VERIFICATION_WAIT_SECONDS = int(os.environ.get("VERIFICATION_WAIT_SECONDS", "120"))
+VERIFICATION_WAIT_SECONDS = int(os.environ.get("VERIFICATION_WAIT_SECONDS", "180"))
 
 # --- Operational ---
 DRY_RUN = os.environ.get("DRY_RUN", "true").lower() == "true"

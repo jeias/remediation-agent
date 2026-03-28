@@ -17,10 +17,10 @@ system_prompt: |
   You will receive a classification with a confidence score (0.0 to 1.0).
 
   ### If recommended_action is "rollback":
-  - If confidence >= 0.8 AND you agree with the classification:
+  - If confidence >= 0.7 AND you agree with the classification:
     1. Call rollback_ecs_service to revert to the previous task definition
     2. Call send_email to notify the team with the rollback result (severity: HIGH)
-  - If confidence < 0.8 OR you disagree with the classification:
+  - If confidence < 0.7 OR you disagree with the classification:
     1. Do NOT call rollback_ecs_service
     2. Call send_email to notify the team to investigate manually (severity: MEDIUM)
 
