@@ -174,7 +174,7 @@ def run_classification(client: Anthropic, summary: SummarizationOutput, trace_lo
         output_schema=ClassificationOutput,
         agent_name="classification",
         trace_logger=trace_logger,
-        max_tool_calls=8,
+        max_tool_calls=12,
     )
 
 
