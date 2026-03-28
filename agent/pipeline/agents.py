@@ -62,6 +62,7 @@ def run_agent(
     agent_name: str,
     trace_logger: TraceLogger,
     max_tool_calls: int = MAX_TOOL_CALLS,
+    parallel_tool_use: bool = False,
 ):
     output_config = build_output_config(output_schema)
     tool_call_count = 0
@@ -74,7 +75,7 @@ def run_agent(
             temperature=temperature,
             system=system_prompt,
             tools=tools,
-            tool_choice={"type": "auto", "disable_parallel_tool_use": True},
+            tool_choice={"type": "auto", "disable_parallel_tool_use": not parallel_tool_use},
             messages=current_messages,
             output_config=output_config,
         )
@@ -83,15 +84,14 @@ def run_agent(
 
         # Tool use — execute tools and continue the loop
         if response.stop_reason == "tool_use":
-            tool_call_count += 1
-            if tool_call_count > max_tool_calls:
-                raise MaxToolCallsExceeded(
-                    f"Agent '{agent_name}' exceeded {max_tool_calls} tool calls"
-                )
-
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
+                    tool_call_count += 1
+                    if tool_call_count > max_tool_calls:
+                        raise MaxToolCallsExceeded(
+                            f"Agent '{agent_name}' exceeded {max_tool_calls} tool calls"
+                        )
                     trace_logger.log_tool_call(agent_name, block.name, block.input)
                     result = execute_tool(block.name, block.input)
                     trace_logger.log_tool_result(agent_name, block.name, result)
@@ -174,6 +174,7 @@ def run_classification(client: Anthropic, summary: SummarizationOutput, trace_lo
         agent_name="classification",
         trace_logger=trace_logger,
         max_tool_calls=8,
+        parallel_tool_use=True,
     )
 
 
