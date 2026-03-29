@@ -14,18 +14,22 @@ from pipeline.config import (
 logs_client = boto3.client("logs")
 ecs_client = boto3.client("ecs")
 ses_client = boto3.client("ses")
+rds_client = boto3.client("rds")
 
 
 def fetch_cloudwatch_logs(log_group_name: str, minutes_ago: int = 5,
-                          filter_pattern: str | None = None) -> str:
-    start_time = int((datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).timestamp() * 1000)
+                          filter_pattern: str | None = None,
+                          since_timestamp: str | None = None) -> str:
+    if since_timestamp:
+        start_time = int(datetime.fromisoformat(since_timestamp).timestamp() * 1000)
+    else:
+        start_time = int((datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).timestamp() * 1000)
     end_time = int(datetime.now(timezone.utc).timestamp() * 1000)
 
     kwargs = {
         "logGroupName": log_group_name,
         "startTime": start_time,
         "endTime": end_time,
-        "limit": MAX_LOG_LINES,
         "interleaved": True,
     }
     if filter_pattern:
@@ -87,6 +91,7 @@ def rollback_ecs_service(cluster_name: str, service_name: str) -> str:
             "rolled_back_to": previous_revision,
             "deployment_stable": True,
             "wait_seconds": 0,
+            "stabilized_at": datetime.now(timezone.utc).isoformat(),
             "message": f"Would rollback from revision {current_revision} to {previous_revision}",
         })
 
@@ -124,6 +129,7 @@ def rollback_ecs_service(cluster_name: str, service_name: str) -> str:
         "rolled_back_to": previous_revision,
         "deployment_stable": deployment_stable,
         "wait_seconds": wait_seconds,
+        "stabilized_at": datetime.now(timezone.utc).isoformat(),
     }
     if not deployment_stable:
         result["message"] = f"Deployment in progress but not yet stable after {wait_seconds}s"
@@ -234,6 +240,19 @@ def compare_git_commits(base_sha: str, head_sha: str) -> str:
     return json.dumps(result, indent=2)
 
 
+def describe_rds_instance(db_instance_identifier: str) -> str:
+    response = rds_client.describe_db_instances(DBInstanceIdentifier=db_instance_identifier)
+    instance = response["DBInstances"][0]
+    result = {
+        "db_instance_identifier": instance["DBInstanceIdentifier"],
+        "status": instance["DBInstanceStatus"],
+        "engine": instance["Engine"],
+        "endpoint": instance.get("Endpoint", {}).get("Address", "N/A"),
+        "port": instance.get("Endpoint", {}).get("Port", "N/A"),
+    }
+    return json.dumps(result, indent=2)
+
+
 # --- Tool Dispatcher ---
 
 TOOL_EXECUTORS = {
@@ -243,6 +262,7 @@ TOOL_EXECUTORS = {
     "send_email": lambda args: send_email(**args),
     "get_task_definition": lambda args: get_task_definition(**args),
     "compare_git_commits": lambda args: compare_git_commits(**args),
+    "describe_rds_instance": lambda args: describe_rds_instance(**args),
 }
 
 

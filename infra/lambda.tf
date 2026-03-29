@@ -76,6 +76,13 @@ data "aws_iam_policy_document" "lambda_permissions" {
     resources = ["*"]
   }
 
+  # RDS - describe instance status (for infrastructure diagnosis)
+  statement {
+    sid       = "RDSDescribe"
+    actions   = ["rds:DescribeDBInstances"]
+    resources = [aws_db_instance.main.arn]
+  }
+
   # IAM - pass role to ECS when updating service task definition
   # Required by UpdateService when changing task definitions (AWS best practice)
   statement {
@@ -136,7 +143,7 @@ resource "aws_lambda_function" "agent" {
   runtime       = "python3.13"
   handler       = "pipeline.main.handler"
   filename      = "${path.module}/placeholder.zip"
-  timeout       = 900
+  timeout       = 600
   memory_size   = 512
 
   environment {
@@ -153,6 +160,7 @@ resource "aws_lambda_function" "agent" {
       GITHUB_REPO              = "jeias/remediation-agent"
       GITHUB_TOKEN_SECRET_ARN  = aws_secretsmanager_secret.github_token.arn
       TASK_FAMILY              = aws_ecs_task_definition.app.family
+      DB_INSTANCE_ID           = aws_db_instance.main.identifier
     }
   }
 

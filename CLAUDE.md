@@ -44,10 +44,10 @@ AWS profile `dev` is hardcoded in `main.tf`. All resources use `remediation-agen
 ## Implementation Phases
 
 1. **Phase 1** (done): Infra — VPC, ECS cluster, RDS PostgreSQL, ALB, IAM
-2. **Phase 2**: App — FastAPI on ECS Fargate (health + DB endpoints, structured logging)
-3. **Phase 3**: Agent — Lambda with 3-agent pipeline, tool implementations, tracing
-4. **Phase 4**: Monitoring — CloudWatch alarms, EventBridge rules, SQS queue, SES
-5. **Phase 5**: Demo — scripts to trigger both scenarios, polish
+2. **Phase 2** (done): App — FastAPI on ECS Fargate (health + DB endpoints, structured logging)
+3. **Phase 3** (done): Agent — Lambda with 3-agent pipeline, 7 tools, structured outputs, tracing
+4. **Phase 4** (done): Monitoring — CloudWatch alarms, EventBridge rules, SQS queue, SES
+5. **Phase 5** (done): Demo — commit-and-deploy, call-items, deploy scripts
 
 ## Naming Convention
 

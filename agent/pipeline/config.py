@@ -17,6 +17,7 @@ MAX_LOG_LINES = 50
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "jeias/remediation-agent")
 GITHUB_TOKEN_SECRET_ARN = os.environ.get("GITHUB_TOKEN_SECRET_ARN", "")
 TASK_FAMILY = os.environ.get("TASK_FAMILY", "remediation-agent-app")
+DB_INSTANCE_ID = os.environ.get("DB_INSTANCE_ID", "remediation-agent-db")
 
 # --- Verification ---
 VERIFICATION_WAIT_SECONDS = int(os.environ.get("VERIFICATION_WAIT_SECONDS", "180"))

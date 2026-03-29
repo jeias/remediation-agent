@@ -1,4 +1,4 @@
-from pipeline.config import CLUSTER_NAME, SERVICE_NAME, LOG_GROUP_NAME, SES_TEAM_RECIPIENT, SES_OPS_RECIPIENT, TASK_FAMILY
+from pipeline.config import CLUSTER_NAME, SERVICE_NAME, LOG_GROUP_NAME, SES_TEAM_RECIPIENT, SES_OPS_RECIPIENT, TASK_FAMILY, DB_INSTANCE_ID
 
 TOOL_FETCH_LOGS = {
     "name": "fetch_cloudwatch_logs",
@@ -19,6 +19,10 @@ TOOL_FETCH_LOGS = {
             "filter_pattern": {
                 "type": "string",
                 "description": "Optional CloudWatch Logs filter pattern (e.g., 'ERROR')",
+            },
+            "since_timestamp": {
+                "type": "string",
+                "description": "ISO 8601 timestamp. Only return logs after this time. Overrides minutes_ago. Use alarm's previousState.timestamp for summarization, or rollback's stabilized_at for post-rollback verification.",
             },
         },
         "required": ["log_group_name"],
@@ -140,7 +144,25 @@ TOOL_COMPARE_COMMITS = {
     },
 }
 
+TOOL_DESCRIBE_RDS = {
+    "name": "describe_rds_instance",
+    "strict": True,
+    "description": "Check the status of the RDS database instance. Use this when investigating infrastructure issues to determine WHY the database is unreachable (stopped, failing, etc.).",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "db_instance_identifier": {
+                "type": "string",
+                "enum": [DB_INSTANCE_ID],
+                "description": "The RDS instance identifier",
+            },
+        },
+        "required": ["db_instance_identifier"],
+        "additionalProperties": False,
+    },
+}
+
 # Tool sets per agent (least-privilege)
 SUMMARIZATION_TOOLS = [TOOL_FETCH_LOGS]
-CLASSIFICATION_TOOLS = [TOOL_FETCH_LOGS, TOOL_DESCRIBE_ECS, TOOL_GET_TASK_DEF, TOOL_COMPARE_COMMITS]
+CLASSIFICATION_TOOLS = [TOOL_FETCH_LOGS, TOOL_DESCRIBE_ECS, TOOL_GET_TASK_DEF, TOOL_COMPARE_COMMITS, TOOL_DESCRIBE_RDS]
 REMEDIATION_TOOLS = [TOOL_ROLLBACK_ECS, TOOL_SEND_EMAIL]
