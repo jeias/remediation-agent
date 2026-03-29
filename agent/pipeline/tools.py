@@ -20,6 +20,10 @@ TOOL_FETCH_LOGS = {
                 "type": "string",
                 "description": "Optional CloudWatch Logs filter pattern (e.g., 'ERROR')",
             },
+            "since_timestamp": {
+                "type": "string",
+                "description": "ISO 8601 timestamp. Only return logs after this time. Overrides minutes_ago. Use alarm's previousState.timestamp for summarization, or rollback's stabilized_at for post-rollback verification.",
+            },
         },
         "required": ["log_group_name"],
         "additionalProperties": False,
