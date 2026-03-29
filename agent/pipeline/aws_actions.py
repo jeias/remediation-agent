@@ -30,7 +30,6 @@ def fetch_cloudwatch_logs(log_group_name: str, minutes_ago: int = 5,
         "logGroupName": log_group_name,
         "startTime": start_time,
         "endTime": end_time,
-        "limit": MAX_LOG_LINES,
         "interleaved": True,
     }
     if filter_pattern:

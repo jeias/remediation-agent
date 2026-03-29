@@ -30,6 +30,15 @@ def parse_sqs_event(event: dict) -> dict:
     return body.get("detail", body)
 
 
+def extract_alarm_start_date(alarm_event: dict) -> str | None:
+    """Extract startDate from alarm state.reasonData (ALARM state)."""
+    try:
+        reason_data = json.loads(alarm_event.get("state", {}).get("reasonData", "{}"))
+        return reason_data.get("startDate")
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 def fail_open_escalate(alarm_event: dict, error: Exception, trace_logger: TraceLogger):
     trace_logger.log_event("fail_open", {
         "error_type": type(error).__name__,
@@ -72,8 +81,11 @@ def handler(event, context):
             "dry_run": DRY_RUN,
         })
 
+        # Extract error detection time from alarm (code handles nested JSON parsing)
+        alarm_start = extract_alarm_start_date(alarm_event)
+
         # Agent 1: Summarization
-        summary = run_summarization(client, alarm_event, trace_logger)
+        summary = run_summarization(client, alarm_event, trace_logger, alarm_start=alarm_start)
 
         # Agent 2: Classification
         classification = run_classification(client, summary, trace_logger)

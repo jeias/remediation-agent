@@ -126,14 +126,23 @@ def run_agent(
 
 # --- Agent Runner Functions ---
 
-def run_summarization(client: Anthropic, alarm_event: dict, trace_logger: TraceLogger) -> SummarizationOutput:
-    trace_logger.log_event("agent_start", {"agent": "summarization"})
+def run_summarization(client: Anthropic, alarm_event: dict, trace_logger: TraceLogger, alarm_start: str | None = None) -> SummarizationOutput:
+    trace_logger.log_event("agent_start", {"agent": "summarization", "alarm_start": alarm_start})
+
+    time_context = ""
+    if alarm_start:
+        time_context = (
+            f"\n\nErrors were detected starting at {alarm_start}. "
+            f"Use this as since_timestamp when fetching logs to only see errors from the current incident."
+        )
+
     messages = [
         {
             "role": "user",
             "content": (
-                f"A CloudWatch alarm has triggered. Here is the alarm event:\n\n"
-                f"{json.dumps(alarm_event, indent=2, default=str)}\n\n"
+                f"A CloudWatch alarm has triggered."
+                f"{time_context}\n\n"
+                f"Alarm event:\n{json.dumps(alarm_event, indent=2, default=str)}\n\n"
                 f"Fetch the application logs and produce a structured summary."
             ),
         }
