@@ -217,5 +217,5 @@ def run_remediation(
         output_schema=RemediationOutput,
         agent_name="remediation",
         trace_logger=trace_logger,
-        max_tool_calls=10,
+        max_tool_calls=8,
     )
