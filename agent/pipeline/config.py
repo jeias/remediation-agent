@@ -20,7 +20,7 @@ TASK_FAMILY = os.environ.get("TASK_FAMILY", "remediation-agent-app")
 DB_INSTANCE_ID = os.environ.get("DB_INSTANCE_ID", "remediation-agent-db")
 
 # --- Verification ---
-VERIFICATION_WAIT_SECONDS = int(os.environ.get("VERIFICATION_WAIT_SECONDS", "180"))
+VERIFICATION_WAIT_SECONDS = int(os.environ.get("VERIFICATION_WAIT_SECONDS", "120"))
 
 # --- Operational ---
 DRY_RUN = os.environ.get("DRY_RUN", "true").lower() == "true"

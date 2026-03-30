@@ -122,8 +122,8 @@ SQS Event (CloudWatch Alarm payload)
 │  ┌─────────────────┬──────────────┬─────────────────────────────┐ │
 │  │ Classification   │ Confidence   │ Action                     │ │
 │  ├─────────────────┼──────────────┼─────────────────────────────┤ │
-│  │ rollback         │ >= 0.8       │ Execute rollback + notify  │ │
-│  │ rollback         │ < 0.8        │ SKIP rollback, notify only │ │
+│  │ rollback         │ >= 0.7       │ Execute rollback + notify  │ │
+│  │ rollback         │ < 0.7        │ SKIP rollback, notify only │ │
 │  │ escalate         │ any          │ Send CRITICAL email to ops │ │
 │  └─────────────────┴──────────────┴─────────────────────────────┘ │
 │                                                                   │
@@ -151,68 +151,11 @@ SQS Event (CloudWatch Alarm payload)
 
 ### System Prompt
 
-```
-You are a log analysis agent. Your job is to analyze CloudWatch log events from an ECS
-Fargate application and produce a structured summary.
+Full prompt in `agent/pipeline/prompts/summarization.yaml`. Key design:
 
-You have one tool: fetch_cloudwatch_logs. Use it to retrieve recent logs from the
-application's log group.
+**Time-aware log filtering** — the Lambda handler extracts `state.reasonData.startDate` from the alarm event (the exact timestamp when errors started) and injects it as plain text context in the user message. The agent uses this as `since_timestamp` when calling `fetch_cloudwatch_logs`, ensuring it only analyzes errors from the current incident — not stale errors from a previously resolved incident. Falls back to `minutes_ago=5` if no detection time is provided.
 
-After analyzing the logs, you MUST respond with a JSON object containing:
-{
-  "error_type": "connection_error" | "query_error" | "import_error" | "syntax_error" | "runtime_error" | "timeout" | "unknown",
-  "first_seen": "ISO 8601 timestamp of the first error occurrence",
-  "frequency": <number of error occurrences in the log window>,
-  "affected_service": "name of the affected ECS service",
-  "key_logs": ["up to 5 most relevant log lines that describe the error"]
-}
-
-Rules:
-- Only use the fetch_cloudwatch_logs tool. Do not attempt to fix anything.
-- Focus on errors and exceptions. Ignore INFO-level logs unless they provide context.
-- If no errors are found, return error_type: "unknown" with empty key_logs.
-- Be precise. Only include log lines that actually exist in the tool output.
-- Do NOT invent or fabricate log lines. Only quote lines returned by the tool.
-
-## Example
-
-Given these logs:
-  2026-03-25T14:32:01Z ERROR: Failed to connect to database
-  2026-03-25T14:32:01Z psycopg2.OperationalError: could not connect to server: Connection refused
-  2026-03-25T14:31:55Z INFO: Starting application on 0.0.0.0:8000
-  2026-03-25T14:31:50Z INFO: Task started - task definition revision: 5
-
-You should respond:
-{
-  "error_type": "connection_error",
-  "first_seen": "2026-03-25T14:32:01Z",
-  "frequency": 1,
-  "affected_service": "remediation-agent-app",
-  "key_logs": [
-    "psycopg2.OperationalError: could not connect to server: Connection refused"
-  ]
-}
-
-## Example 2
-
-Given these logs:
-  2026-03-25T14:35:12Z ERROR: Database connection failed
-    psycopg2.errors.UndefinedColumn: column "description" does not exist
-  2026-03-25T14:35:10Z INFO: GET /items - 500
-  2026-03-25T14:34:12Z INFO: GET /health - 200
-  2026-03-25T14:34:00Z INFO: Database initialized successfully
-
-You should respond:
-{
-  "error_type": "query_error",
-  "first_seen": "2026-03-25T14:35:12Z",
-  "frequency": 1,
-  "affected_service": "remediation-agent-app",
-  "key_logs": [
-    "psycopg2.errors.UndefinedColumn: column \"description\" does not exist"
-  ]
-}
-```
+**3 few-shot examples**: connection error (infrastructure), query error (deployment), and no-error (false positive).
 
 ### Output Schema (Pydantic)
 
@@ -298,83 +241,16 @@ This is a **defense in depth** pattern: two independent LLM evaluations (Agent 2
 
 ### System Prompt
 
-```
-You are a remediation agent and safety reviewer for cloud infrastructure. You receive an
-incident classification from a classification agent and must decide whether to execute
-the recommended action.
+Full prompt in `agent/pipeline/prompts/remediation.yaml`. Key design:
 
-Your role is twofold:
-1. REVIEW: Evaluate whether the classification and confidence score justify the action
-2. ACT: Execute the appropriate action and compose a notification email
+**Twofold role** — REVIEW the classification, then ACT on it. The agent independently evaluates whether the confidence score and reasoning justify the recommended action.
 
-You have two tools:
-- rollback_ecs_service: rolls back the ECS service to the previous task definition revision
-- send_email: sends a notification or escalation email via AWS SES
+**Decision rules:**
+- `rollback` + confidence >= 0.7 + agent agrees → execute `rollback_ecs_service`, then `send_email` (HIGH)
+- `rollback` + confidence < 0.7 or agent disagrees → skip rollback, `send_email` notify-only (MEDIUM)
+- `escalate` (any confidence) → do NOT rollback, `send_email` to ops team (CRITICAL)
 
-## Decision Rules
-
-You will receive a classification with a confidence score (0.0 to 1.0).
-
-### If recommended_action is "rollback":
-- If confidence >= 0.7 AND you agree with the classification:
-  1. Call rollback_ecs_service to revert to the previous task definition
-  2. Call send_email to notify the team (severity: HIGH)
-- If confidence < 0.7 OR you disagree with the classification:
-  1. Do NOT call rollback_ecs_service
-  2. Call send_email to notify the team to investigate manually (severity: MEDIUM)
-  3. Explain why you did not execute the rollback
-
-### If recommended_action is "escalate":
-- Regardless of confidence:
-  1. Call send_email to the operations team (severity: CRITICAL)
-  2. Include the full diagnosis, error logs, and recommended manual action
-  3. Do NOT attempt to rollback or fix infrastructure issues
-
-## Email Composition
-
-Write rich, contextual emails that include:
-- Service name and current state
-- Root cause analysis (from the classification summary and original logs)
-- Action taken (or reason for not acting)
-- Recommended next steps for the human team
-
-## Output Format
-
-After completing your actions, respond with a JSON object:
-{
-  "action_taken": "rollback" | "escalated" | "notify_only",
-  "confidence_accepted": true | false,
-  "details": "description of what was done and why"
-}
-
-## Example: High confidence rollback
-
-Classification: {"type": "deployment", "confidence": 0.95, "recommended_action": "rollback",
-  "summary": "Revision 5 introduced bad DATABASE_HOST config"}
-
-I agree with this classification — the evidence clearly points to a bad deployment with
-high confidence. Executing rollback.
-
-[calls rollback_ecs_service]
-[calls send_email with detailed incident summary]
-
-{"action_taken": "rollback", "confidence_accepted": true,
- "details": "Rolled back from revision 5 to revision 4. Bad DATABASE_HOST config."}
-
-## Example: Low confidence — downgrade to notify
-
-Classification: {"type": "deployment", "confidence": 0.6, "recommended_action": "rollback",
-  "summary": "Possible deployment issue but errors are intermittent"}
-
-The confidence is below the 0.7 threshold and the errors are intermittent — this could
-be a transient issue rather than a bad deployment. Rolling back could cause unnecessary
-disruption. Sending notification for manual investigation instead.
-
-[calls send_email asking team to investigate]
-
-{"action_taken": "notify_only", "confidence_accepted": false,
- "details": "Classification confidence too low (0.6). Notified team to investigate manually."}
-```
+**3 few-shot examples**: high-confidence rollback, low-confidence notify-only, and infrastructure escalation (database down — no rollback attempted).
 
 ### Output Schema (Pydantic)
 
@@ -455,8 +331,8 @@ Checks the status of the RDS database instance. Used by Classification in PATH B
 Rolls back the ECS service to the previous task definition revision.
 
 - `cluster_name` and `service_name` constrained to enums
-- After calling `ecs:UpdateService`, **polls ECS every 10s** until deployment is stable (running_count matches desired_count, single PRIMARY deployment) or timeout
-- Returns `deployment_stable: true/false` and `wait_seconds`
+- After calling `ecs:UpdateService`, **polls ECS every 10s** until deployment is stable (running_count matches desired_count, all non-PRIMARY deployments have runningCount 0) or timeout
+- Returns `deployment_stable: true/false`, `wait_seconds`, and `stabilized_at` (ISO 8601 timestamp of when the deployment became stable)
 - Prevents rollback to revision 1 (no previous revision)
 - Respects DRY_RUN mode
 
@@ -485,7 +361,7 @@ Sends incident notification or escalation email via AWS SES.
 | Dead Letter Queue | SQS Standard Queue | `remediation-agent-dlq` |
 | Alerting | CloudWatch Alarms + EventBridge | `remediation-agent-*` |
 | Email | AWS SES | verified sender identity |
-| Secrets | AWS Secrets Manager | `remediation-agent/anthropic-api-key` |
+| Secrets | AWS Secrets Manager | `remediation-agent/anthropic-api-key`, `remediation-agent/github-token` |
 | IaC | Terraform (local state) | flat file structure |
 
 ### Network Architecture
@@ -506,15 +382,15 @@ infra/
 ├── variables.tf         # All input variables
 ├── outputs.tf           # Key outputs (ALB DNS, Lambda ARN, etc.)
 ├── networking.tf        # Default VPC data sources, security groups
-├── ecs.tf               # ECS cluster, service, task definition, ALB
+├── ecs.tf               # ECS cluster, ALB, target group, listener
+├── app.tf               # ECR, CloudWatch log group, task definition, ECS service
 ├── rds.tf               # RDS instance, security group
-├── lambda.tf            # Lambda function, IAM role, SQS trigger
-├── monitoring.tf        # CloudWatch alarms, metric filters, EventBridge rules
-├── sqs.tf               # SQS queue, DLQ, EventBridge target
+├── lambda.tf            # Lambda function, IAM role, Secrets Manager, SQS trigger
+├── monitoring.tf        # CloudWatch alarms, metric filters
+├── sqs.tf               # SQS queue, DLQ, EventBridge rule and target
 ├── ses.tf               # SES email identity verification
-├── secrets.tf           # Secrets Manager for Anthropic API key
-├── iam.tf               # IAM roles and policies (least privilege)
-└── terraform.tfvars     # Environment-specific values
+├── iam.tf               # IAM roles and policies (ECS task execution, task role)
+└── terraform.tfvars     # Environment-specific values (sensitive, gitignored)
 ```
 
 ### IAM — Least Privilege
@@ -523,29 +399,28 @@ infra/
 
 ```
 # CloudWatch Logs — read app logs + write agent logs
-logs:FilterLogEvents    on arn:aws:logs:*:*:log-group:/ecs/remediation-agent-app:*
-logs:CreateLogGroup     on arn:aws:logs:*:*:log-group:/aws/lambda/remediation-agent-*
-logs:CreateLogStream    on arn:aws:logs:*:*:log-group:/aws/lambda/remediation-agent-*:*
-logs:PutLogEvents       on arn:aws:logs:*:*:log-group:/aws/lambda/remediation-agent-*:*
+logs:FilterLogEvents    on /ecs/remediation-agent-app log group
+logs:CreateLogStream    on /aws/lambda/remediation-agent-lambda log group
+logs:PutLogEvents       on /aws/lambda/remediation-agent-lambda log group
 
 # SQS — receive and delete messages
-sqs:ReceiveMessage      on arn:aws:sqs:*:*:remediation-agent-queue
-sqs:DeleteMessage       on arn:aws:sqs:*:*:remediation-agent-queue
-sqs:GetQueueAttributes  on arn:aws:sqs:*:*:remediation-agent-queue
+sqs:ReceiveMessage      on remediation-agent-queue
+sqs:DeleteMessage       on remediation-agent-queue
+sqs:GetQueueAttributes  on remediation-agent-queue
 
 # ECS — describe and update the app service only
-ecs:DescribeServices    on arn:aws:ecs:*:*:service/remediation-agent-cluster/remediation-agent-app
-ecs:UpdateService       on arn:aws:ecs:*:*:service/remediation-agent-cluster/remediation-agent-app
-ecs:DescribeTaskDefinition on arn:aws:ecs:*:*:task-definition/remediation-agent-app:*
+ecs:DescribeServices    on remediation-agent-cluster/remediation-agent-app service
+ecs:UpdateService       on remediation-agent-cluster/remediation-agent-app service
+ecs:DescribeTaskDefinition on * (revision ARNs are impractical to scope)
 
 # SES — send email from verified identity only
-ses:SendEmail           on arn:aws:ses:*:*:identity/*
+ses:SendEmail, ses:SendRawEmail on arn:aws:ses:*:*:identity/*
 
 # RDS — describe instance status
 rds:DescribeDBInstances on remediation-agent-db ARN
 
 # Secrets Manager — read API key + GitHub token
-secretsmanager:GetSecretValue on arn:aws:secretsmanager:*:*:secret:remediation-agent/*
+secretsmanager:GetSecretValue on remediation-agent/anthropic-api-key, remediation-agent/github-token
 
 # IAM — pass roles to ECS when updating service (AWS best practice)
 iam:GetRole, iam:PassRole on ECS execution + task role ARNs
@@ -579,7 +454,6 @@ iam:GetRole, iam:PassRole on ECS execution + task role ARNs
 
 | Alarm Name | Metric | Condition | Period | Eval Periods |
 |------------|--------|-----------|--------|-------------|
-| `remediation-agent-running-tasks` | ECS `RunningTaskCount` | < 1 | 60s | 1 |
 | `remediation-agent-error-rate` | Custom metric filter on `ERROR` | >= 10 | 60s | 1 |
 
 **Metric Filter** (for error rate alarm):
@@ -787,12 +661,12 @@ If any agent in the pipeline fails (unexpected Claude response, API error, tool 
 | Failure | Behavior | Recovery |
 |---------|----------|----------|
 | Claude API timeout/error | Anthropic SDK built-in retry (exponential backoff) | Automatic |
-| Claude returns invalid JSON | Retry once with correction prompt, then fail open | Automatic (1 retry) |
-| Pydantic validation fails | Retry once with validation error message, then fail open | Automatic (1 retry) |
-| Claude calls unknown tool | Ignore tool call, log warning, continue loop | Automatic |
+| Invalid JSON / schema mismatch | Eliminated by structured outputs (`output_config` with `json_schema`) — API guarantees valid JSON matching schema | N/A |
+| Response truncated (max_tokens) | `AgentValidationError` raised, pipeline fails open with escalation email | Automatic |
+| Max tool calls exceeded | `MaxToolCallsExceeded` raised, pipeline fails open with escalation email | Automatic |
 | Tool execution fails (e.g., ECS API error) | Return error message to Claude, let it decide | Automatic |
 | Duplicate alarm event (SQS at-least-once) | Accepted risk for POC — see Production Considerations | N/A |
-| Lambda timeout (300s) | Lambda fails, SQS redelivers | Automatic (max 3x) |
+| Lambda timeout (600s) | Lambda fails, SQS redelivers | Automatic (max 3x) |
 | All retries exhausted | Message goes to DLQ | Manual review |
 | Secrets Manager unavailable | Lambda fails at cold start | SQS redelivery |
 
@@ -837,10 +711,10 @@ If any agent in the pipeline fails (unexpected Claude response, API error, tool 
 **Goal**: Lambda function with the 3-agent pipeline, tested locally against real Claude API.
 
 **Deliverables:**
-- `agent/main.py` — Lambda handler, SQS event parsing, pipeline orchestration
-- `agent/agents.py` — Summarization, Classification, Remediation agent classes
-- `agent/tools.py` — Tool definitions (schemas) for Claude
-- `agent/aws_actions.py` — Tool implementations (boto3 calls)
+- `agent/pipeline/main.py` — Lambda handler, SQS event parsing, pipeline orchestration
+- `agent/pipeline/agents.py` — Generic agentic loop + Summarization, Classification, Remediation runner functions
+- `agent/pipeline/tools.py` — Tool definitions (schemas) for Claude with strict mode
+- `agent/pipeline/aws_actions.py` — Tool implementations (boto3 calls)
 - `agent/pipeline/config.py` — Constants, resource names, DRY_RUN flag
 - `agent/pipeline/schemas.py` — Pydantic output models
 - `agent/pipeline/tracing.py` — Structured logging with trace IDs and token tracking
@@ -909,20 +783,20 @@ Summary of AI agent best practices applied in this architecture:
 | # | Best Practice | Status | Implementation |
 |---|--------------|--------|----------------|
 | 1 | Structured outputs (API-enforced JSON) | Done | `output_config` + `transform_schema` guarantees valid JSON matching Pydantic schemas |
-| 2 | Strict tool use (API-enforced inputs) | Done | `strict: true` + `additionalProperties: false` on all 6 tools — enum constraints enforced at token level |
+| 2 | Strict tool use (API-enforced inputs) | Done | `strict: true` + `additionalProperties: false` on all 7 tools — enum constraints enforced at token level |
 | 3 | Confidence scoring in classification | Done | Float 0.0-1.0 with guidelines per range (0.95+ with code diff match) |
 | 4 | Reviewer/Gatekeeper pattern for destructive actions | Done | Agent 3 reviews confidence before executing rollback |
 | 5 | Few-shot examples in YAML prompts | Done | Examples for each classification type and remediation scenario |
 | 6 | Chain-of-thought as structured output field | Done | `reasoning` field in ClassificationOutput (not XML tags) |
 | 7 | Temperature tuning per agent | Done | 0 for extraction/classification, 0.3 for remediation (configured in YAML) |
-| 8 | Atomic tools, agent orchestrates | Done | Classification agent uses 4 tools in sequence: describe_ecs → get_task_def x2 → compare_commits |
+| 8 | Atomic tools, agent orchestrates | Done | Classification agent uses 5 tools in sequence: describe_ecs → get_task_def x2 → compare_commits (PATH A) or describe_rds (PATH B) |
 | 9 | Code diff for root cause analysis | Done | `get_task_definition` + `compare_git_commits` tools correlate code changes with errors |
 | 10 | Constrained tool schemas (enum values) | Done | All resource identifiers use enums, enforced by strict mode |
 | 11 | Fail open to humans | Done | Escalation email on any pipeline failure |
 | 12 | Dry run mode | Done | `DRY_RUN` env var skips destructive actions (defaults to true) |
 | 13 | Token and cost tracking per agent step | Done | Structured JSON logs with trace ID |
 | 14 | Defense in depth (2 LLM evaluations agree) | Done | Classification proposes, Remediation validates |
-| 15 | Least-privilege tool access per agent | Done | Summarization: 1 tool, Classification: 4 tools, Remediation: 2 tools |
+| 15 | Least-privilege tool access per agent | Done | Summarization: 1 tool, Classification: 5 tools, Remediation: 2 tools |
 | 16 | Sequential pipeline pattern (justified) | Done | Pattern comparison table with rationale |
 | 17 | Rollback with deployment verification | Done | `rollback_ecs_service` polls ECS until deployment stable before returning |
 | 18 | Git SHA image tagging | Done | Deploy script tags images with commit SHA for traceability |
