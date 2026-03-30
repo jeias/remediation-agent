@@ -60,7 +60,7 @@ The agent is not a single monolithic LLM call. It is a **sequential pipeline of 
 │  │                  │   │  + reasoning      │   │                      │  │
 │  └──────────────────┘   └───────────────────┘   └──────────────────────┘  │
 │                                                                           │
-│  Validation: Structured outputs (API-enforced) + strict tool use           │
+│  Validation: Structured outputs (API-enforced) + strict tool use          │
 │  If classification = "not_actionable" ──▶ log and exit                    │
 │  If confidence < threshold ──▶ Agent 3 downgrades to notify-only          │
 │  If any agent fails ──▶ escalate to humans (fail open)                    │
