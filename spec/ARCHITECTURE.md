@@ -34,6 +34,8 @@ The agent is not a single monolithic LLM call. It is a **sequential pipeline of 
 - **Debuggability** — each step produces structured output that can be inspected independently
 - **Testability** — each agent can be tested in isolation with mocked inputs
 - **Defense in depth** — Agent 3 reviews Agent 2's classification before acting, two independent LLM evaluations must agree
+- **Structured outputs** — Pydantic-validated JSON between agents eliminates parsing failures, guarantees type-safe contracts, and enables reliable branching logic (e.g., short-circuit on `recommended_action: "none"`)
+- **Temperature tuning per agent** — 0 for deterministic extraction and classification (consistency is critical), 0.3 for remediation (slight flexibility for composing contextual emails while keeping action decisions stable)
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
